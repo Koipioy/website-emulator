@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Website Emulator</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="header">
+        <h1>Website Emulator</h1>
+        <p class="subtitle">Control a real browser page from this panel</p>
+        <form id="nav-form" class="nav-form">
+          <input
+            id="url-input"
+            type="url"
+            placeholder="https://example.com"
+            required
+            autocomplete="url"
+          />
+          <button type="submit" id="connect-btn">Connect</button>
+          <button type="button" id="refresh-btn" disabled>Refresh</button>
+          <button type="button" id="disconnect-btn" disabled>Disconnect</button>
+        </form>
+        <div id="status" class="status">Disconnected</div>
+      </header>
+      <main id="elements" class="elements"></main>
+    </div>
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>

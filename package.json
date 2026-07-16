@@ -1,0 +1,27 @@
+{
+  "name": "website-emulator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Mirror interactable DOM elements from a Playwright browser onto a local control panel",
+  "type": "module",
+  "scripts": {
+    "dev": "DEV=1 tsx watch src/server.ts",
+    "build": "vite build && tsc -p tsconfig.json && cp src/browser/scan-in-page.js dist/browser/",
+    "start": "node dist/server.js",
+    "verify": "npm run build && node --import tsx scripts/verify.ts",
+    "postinstall": "playwright install chromium"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "playwright": "^1.52.0",
+    "ws": "^8.18.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.1",
+    "@types/node": "^22.15.3",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.4"
+  }
+}
