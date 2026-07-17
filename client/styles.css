@@ -113,31 +113,48 @@ button:disabled {
   margin-top: 1.5rem;
 }
 
+.screenshot-section {
+  margin-top: 1.5rem;
+}
+
+.screenshot-section.hidden {
+  display: none;
+}
+
+.screenshot-heading {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.page-screenshot {
+  display: block;
+  width: 100%;
+  max-height: 480px;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
 .empty {
   color: var(--muted);
   text-align: center;
   padding: 2rem;
 }
 
-.group {
-  margin-bottom: 1.5rem;
+.list-banner {
+  margin-bottom: 1rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid #3b4f7a;
+  background: #1a2540;
+  color: var(--accent-hover);
+  font-size: 0.9rem;
+  font-weight: 500;
 }
 
-.group h2 {
-  margin: 0 0 0.75rem;
-  font-size: 1rem;
-  text-transform: capitalize;
-  color: var(--muted);
-  font-weight: 600;
-}
-
-.count {
-  font-family: ui-monospace, monospace;
-  font-size: 0.85rem;
-  color: var(--ref);
-}
-
-.group-list {
+.tab-list {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -156,9 +173,49 @@ button:disabled {
 
 .card-header {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   gap: 0.75rem;
   margin-bottom: 0.5rem;
+}
+
+.tab-order {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--accent-hover);
+  background: #1a2540;
+  border: 1px solid #3b4f7a;
+  border-radius: 6px;
+  padding: 0.15rem 0.45rem;
+  flex-shrink: 0;
+  min-width: 2rem;
+  text-align: center;
+}
+
+.card-title {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.role-badge,
+.tabindex-badge {
+  font-family: ui-monospace, monospace;
+  font-size: 0.7rem;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
 }
 
 .ref {

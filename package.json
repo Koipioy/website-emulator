@@ -5,8 +5,9 @@
   "description": "Mirror interactable DOM elements from a Playwright browser onto a local control panel",
   "type": "module",
   "scripts": {
-    "dev": "DEV=1 tsx watch src/server.ts",
-    "build": "vite build && tsc -p tsconfig.json && cp src/browser/scan-in-page.js dist/browser/",
+    "dev": "DEV=1 tsx src/server.ts",
+    "dev:watch": "DEV=1 node --import tsx --watch-path=./src src/server.ts",
+    "build": "vite build && tsc -p tsconfig.json && cp src/browser/scan-in-page.js src/browser/on-screen-check.js dist/browser/",
     "start": "node dist/server.js",
     "verify": "npm run build && node --import tsx scripts/verify.ts",
     "postinstall": "playwright install chromium"
@@ -14,6 +15,7 @@
   "dependencies": {
     "express": "^5.1.0",
     "playwright": "^1.52.0",
+    "sharp": "^0.35.3",
     "ws": "^8.18.1"
   },
   "devDependencies": {

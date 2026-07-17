@@ -1,4 +1,7 @@
 import { chromium, type Browser, type Page } from "playwright";
+import { formatUserError } from "../shared/errors.js";
+
+const CLOSE_TIMEOUT_MS = 800;
 
 export class BrowserSession {
   private browser: Browser | null = null;
@@ -18,6 +21,10 @@ export class BrowserSession {
 
     this.browser = await chromium.launch({
       headless: process.env.HEADLESS === "1",
+      handleSIGINT: false,
+      handleSIGTERM: false,
+    }).catch((err) => {
+      throw new Error(formatUserError(err));
     });
     const context = await this.browser.newContext();
     this.page = await context.newPage();
@@ -35,30 +42,73 @@ export class BrowserSession {
     return this.page;
   }
 
-  async close(): Promise<void> {
+  async closeFast(): Promise<void> {
     const page = this.page;
     const browser = this.browser;
+    const browserProcess =
+      browser && "process" in browser && typeof browser.process === "function"
+        ? browser.process()
+        : null;
+
     this.page = null;
     this.browser = null;
     this.navigationHandler = null;
 
     if (page) {
       page.removeAllListeners("framenavigated");
-      const context = page.context();
-      await Promise.race([
-        (async () => {
-          await page.close().catch(() => {});
-          await context.close().catch(() => {});
-        })(),
-        new Promise((resolve) => setTimeout(resolve, 3000)),
-      ]);
     }
 
-    if (browser) {
-      await Promise.race([
-        browser.close().catch(() => {}),
-        new Promise((resolve) => setTimeout(resolve, 3000)),
-      ]);
+    if (browserProcess && browserProcess.exitCode === null) {
+      try {
+        browserProcess.kill("SIGKILL");
+      } catch {
+        // Process may already be gone.
+      }
+    }
+
+    await browser?.close().catch(() => {});
+  }
+
+  async close(): Promise<void> {
+    const page = this.page;
+    const browser = this.browser;
+    const browserProcess =
+      browser && "process" in browser && typeof browser.process === "function"
+        ? browser.process()
+        : null;
+
+    this.page = null;
+    this.browser = null;
+    this.navigationHandler = null;
+
+    if (page) {
+      page.removeAllListeners("framenavigated");
+    }
+
+    await Promise.race([
+      (async () => {
+        try {
+          if (page) {
+            const context = page.context();
+            await page.close({ runBeforeUnload: false });
+            await context.close();
+          }
+          if (browser) {
+            await browser.close();
+          }
+        } catch {
+          // Best-effort graceful shutdown.
+        }
+      })(),
+      new Promise((resolve) => setTimeout(resolve, CLOSE_TIMEOUT_MS)),
+    ]);
+
+    if (browserProcess && browserProcess.exitCode === null) {
+      try {
+        browserProcess.kill("SIGKILL");
+      } catch {
+        // Process may already be gone.
+      }
     }
   }
 }

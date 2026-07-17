@@ -13,10 +13,16 @@ const refreshBtn = document.getElementById("refresh-btn") as HTMLButtonElement;
 const disconnectBtn = document.getElementById("disconnect-btn") as HTMLButtonElement;
 const statusEl = document.getElementById("status") as HTMLDivElement;
 const elementsEl = document.getElementById("elements") as HTMLElement;
+const screenshotSection = document.getElementById("screenshot-section") as HTMLElement;
+const pageScreenshot = document.getElementById("page-screenshot") as HTMLImageElement;
 
 let ws: WebSocket | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectAttempt = 0;
+let hasConnectedOnce = false;
 let session: SessionState = { connected: false, url: "", title: "" };
 let elements: InteractableElement[] = [];
+let elementsSnapshot = "";
 let lastAction = "";
 
 function send(message: object): void {
@@ -37,45 +43,64 @@ function updateControls(): void {
   connectBtn.textContent = connected ? "Reconnect" : "Connect";
 }
 
+function updateScreenshot(screenshot?: string): void {
+  if (session.connected && screenshot) {
+    screenshotSection.classList.remove("hidden");
+    pageScreenshot.src = screenshot;
+    return;
+  }
+
+  screenshotSection.classList.add("hidden");
+  pageScreenshot.removeAttribute("src");
+}
+
 function renderElements(): void {
+  const focusRef =
+    document.activeElement?.closest(".card")?.querySelector(".ref")?.textContent ?? null;
+  const draftValue =
+    focusRef && document.activeElement instanceof HTMLInputElement
+      ? document.activeElement.value
+      : null;
+
   elementsEl.innerHTML = "";
 
   if (!session.connected) {
-    elementsEl.innerHTML = `<p class="empty">Enter a URL and click Connect to scan interactable elements.</p>`;
+    elementsEl.innerHTML = `<p class="empty">Enter a URL and click Connect to list visible tabbable elements.</p>`;
     return;
   }
+
+  const banner = document.createElement("div");
+  banner.className = "list-banner";
+  banner.textContent = "Visible tabbable elements (on screen) — tab order";
+  elementsEl.appendChild(banner);
 
   if (elements.length === 0) {
-    elementsEl.innerHTML = `<p class="empty">No interactable elements found on this page.</p>`;
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "No visible tabbable elements on screen.";
+    elementsEl.appendChild(empty);
     return;
   }
 
-  const groups = new Map<string, InteractableElement[]>();
-  for (const el of elements) {
-    const list = groups.get(el.role) ?? [];
-    list.push(el);
-    groups.set(el.role, list);
+  const list = document.createElement("div");
+  list.className = "tab-list";
+
+  const sorted = [...elements].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  for (const el of sorted) {
+    list.appendChild(renderElementCard(el));
   }
 
-  const roleOrder = ["button", "link", "textbox", "checkbox", "radio", "select", "combobox"];
-  const sortedRoles = [...groups.keys()].sort(
-    (a, b) => roleOrder.indexOf(a) - roleOrder.indexOf(b),
-  );
+  elementsEl.appendChild(list);
 
-  for (const role of sortedRoles) {
-    const section = document.createElement("section");
-    section.className = "group";
-    section.innerHTML = `<h2>${role}s <span class="count">${groups.get(role)!.length}</span></h2>`;
-
-    const list = document.createElement("div");
-    list.className = "group-list";
-
-    for (const el of groups.get(role)!) {
-      list.appendChild(renderElementCard(el));
+  if (focusRef && draftValue !== null) {
+    const card = [...elementsEl.querySelectorAll(".card")].find(
+      (node) => node.querySelector(".ref")?.textContent === focusRef,
+    );
+    const input = card?.querySelector(".text-input");
+    if (input instanceof HTMLInputElement) {
+      input.value = draftValue;
+      input.focus();
     }
-
-    section.appendChild(list);
-    elementsEl.appendChild(section);
   }
 }
 
@@ -86,7 +111,29 @@ function renderElementCard(el: InteractableElement): HTMLElement {
 
   const header = document.createElement("div");
   header.className = "card-header";
-  header.innerHTML = `<span class="ref">${el.ref}</span><span class="label">${escapeHtml(el.label)}</span>`;
+
+  const orderBadge = document.createElement("span");
+  orderBadge.className = "tab-order";
+  orderBadge.textContent = `#${el.order ?? "?"}`;
+
+  const metaBadges = document.createElement("div");
+  metaBadges.className = "card-badges";
+
+  const roleBadge = document.createElement("span");
+  roleBadge.className = "role-badge";
+  roleBadge.textContent = el.role;
+
+  const tabIndexBadge = document.createElement("span");
+  tabIndexBadge.className = "tabindex-badge";
+  tabIndexBadge.textContent = `tabindex=${el.tabIndex ?? 0}`;
+
+  metaBadges.append(roleBadge, tabIndexBadge);
+
+  const title = document.createElement("div");
+  title.className = "card-title";
+  title.innerHTML = `<span class="ref">${el.ref}</span><span class="label">${escapeHtml(el.label)}</span>`;
+
+  header.append(orderBadge, title, metaBadges);
   card.appendChild(header);
 
   if (el.href) {
@@ -143,8 +190,7 @@ function renderElementCard(el: InteractableElement): HTMLElement {
       break;
     }
 
-    case "select":
-    case "combobox": {
+    case "select": {
       const select = document.createElement("select");
       select.disabled = !!el.disabled;
       for (const opt of el.options ?? []) {
@@ -160,6 +206,47 @@ function renderElementCard(el: InteractableElement): HTMLElement {
       controls.append(select, selectBtn);
       break;
     }
+
+    case "combobox": {
+      if (el.options && el.options.length > 0) {
+        const select = document.createElement("select");
+        select.disabled = !!el.disabled;
+        for (const opt of el.options) {
+          const option = document.createElement("option");
+          option.value = opt.value;
+          option.textContent = opt.label;
+          if (opt.value === el.value) option.selected = true;
+          select.appendChild(option);
+        }
+        const selectBtn = actionButton("Select", () => {
+          send({ type: "select", ref: el.ref, value: select.value });
+        }, el.disabled);
+        controls.append(select, selectBtn);
+      } else {
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "text-input";
+        input.value = el.value ?? "";
+        input.placeholder = "Enter value";
+        input.disabled = !!el.disabled;
+
+        const fillBtn = actionButton("Fill", () => {
+          send({ type: "fill", ref: el.ref, value: input.value });
+        }, el.disabled);
+
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            send({ type: "press", ref: el.ref, key: "Enter" });
+          }
+        });
+
+        controls.append(input, fillBtn);
+      }
+      break;
+    }
+
+    default:
+      controls.appendChild(actionButton("Click", () => send({ type: "click", ref: el.ref }), el.disabled));
   }
 
   card.appendChild(controls);
@@ -190,18 +277,28 @@ function handleServerMessage(message: ServerMessage): void {
       if (session.connected && session.url) {
         urlInput.value = session.url;
       }
+      if (!session.connected) {
+        updateScreenshot();
+      }
       renderElements();
       break;
 
-    case "elements":
+    case "elements": {
+      const snapshot = JSON.stringify(message.elements);
+      const pageChanged = message.url !== session.url || message.title !== session.title;
       elements = message.elements;
       session = { ...session, connected: true, url: message.url, title: message.title };
       updateControls();
+      updateScreenshot(message.screenshot);
       setStatus(
-        `${message.title || "Untitled"} — ${message.url} — ${message.elements.length} element(s)${lastAction ? ` — ${lastAction}` : ""}`,
+        `${message.title || "Untitled"} — ${message.url} — ${message.elements.length} visible tabbable element(s) — auto-sync every 3s${lastAction ? ` — ${lastAction}` : ""}`,
       );
-      renderElements();
+      if (snapshot !== elementsSnapshot || pageChanged) {
+        elementsSnapshot = snapshot;
+        renderElements();
+      }
       break;
+    }
 
     case "action_result":
       lastAction = message.success
@@ -212,15 +309,43 @@ function handleServerMessage(message: ServerMessage): void {
 
     case "error":
       setStatus(message.message, "error");
+      updateControls();
       break;
   }
 }
 
+function scheduleReconnect(): void {
+  if (reconnectTimer) return;
+
+  const delay = Math.min(500 * 2 ** reconnectAttempt, 8000);
+  reconnectAttempt += 1;
+  const serverHint = hasConnectedOnce
+    ? "Server connection lost"
+    : "Cannot reach server — run npm run dev in the project folder";
+  setStatus(
+    reconnectAttempt === 1
+      ? `${serverHint} — reconnecting…`
+      : `${serverHint} — retrying in ${Math.round(delay / 1000)}s…`,
+    "error",
+  );
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectWebSocket();
+  }, delay);
+}
+
 function connectWebSocket(): void {
+  if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
+    return;
+  }
+
   ws = new WebSocket(WS_URL);
 
   ws.addEventListener("open", () => {
-    setStatus("Connected to server");
+    reconnectAttempt = 0;
+    hasConnectedOnce = true;
+    setStatus("Connected to server — enter a URL and click Connect");
   });
 
   ws.addEventListener("message", (event) => {
@@ -233,8 +358,12 @@ function connectWebSocket(): void {
   });
 
   ws.addEventListener("close", () => {
-    setStatus("Disconnected from server — reconnecting…", "error");
-    setTimeout(connectWebSocket, 1500);
+    ws = null;
+    scheduleReconnect();
+  });
+
+  ws.addEventListener("error", () => {
+    // close event will trigger reconnect
   });
 }
 
@@ -246,15 +375,17 @@ navForm.addEventListener("submit", (e) => {
 
 refreshBtn.addEventListener("click", () => {
   send({ type: "refresh" });
-  setStatus("Refreshing element list…");
+  setStatus("Refreshing visible tabbable list…");
 });
 
 disconnectBtn.addEventListener("click", () => {
   send({ type: "disconnect" });
   elements = [];
+  elementsSnapshot = "";
   session = { connected: false, url: "", title: "" };
   lastAction = "";
   updateControls();
+  updateScreenshot();
   renderElements();
   setStatus("Disconnected");
 });

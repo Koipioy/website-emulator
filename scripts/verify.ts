@@ -101,8 +101,13 @@ async function runTests(): Promise<void> {
     if (elementsMsg.type !== "elements") throw new Error("Expected elements message");
 
     const links = elementsMsg.elements.filter((e) => e.role === "link");
-    if (links.length === 0) throw new Error("Expected at least one link on example.com");
-    console.log(`✓ Scanned example.com — ${elementsMsg.elements.length} element(s), ${links.length} link(s)`);
+    if (links.length === 0) throw new Error("Expected at least one visible link on example.com");
+    if (!elementsMsg.screenshot?.startsWith("data:image/jpeg")) {
+      throw new Error("Expected highlighted screenshot in elements message");
+    }
+    console.log(
+      `✓ Scanned example.com — ${elementsMsg.elements.length} visible element(s), ${links.length} link(s), screenshot included`,
+    );
 
     const linkRef = links[0]!.ref;
     send(ws, { type: "click", ref: linkRef });

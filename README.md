@@ -28,7 +28,8 @@ Open http://localhost:3000, enter a URL, and click **Connect**. A headed Chromiu
 
 | Command | Description |
 |---------|-------------|
-| `npm run dev` | Start server + Vite dev client |
+| `npm run dev` | Start server (stable, no auto-restart) |
+| `npm run dev:watch` | Start server with auto-restart on `src/` changes |
 | `npm run build` | Build client and compile server |
 | `npm start` | Run production build |
 | `npm run verify` | Run integration smoke test (uses headless browser) |

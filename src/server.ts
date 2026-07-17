@@ -15,24 +15,76 @@ import {
 import { BrowserSession } from "./browser/session.js";
 import {
   type ClientMessage,
+  type InteractableElement,
   type ServerMessage,
   type SessionState,
   parseClientMessage,
 } from "./shared/protocol.js";
+import { formatUserError } from "./shared/errors.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = 3000;
 const HOST = "127.0.0.1";
 const IS_DEV = process.env.DEV === "1";
+const SYNC_INTERVAL_MS = 3000;
 
 const session = new BrowserSession();
 const clients = new Set<WebSocket>();
 
 let rescanTimer: ReturnType<typeof setTimeout> | null = null;
+let syncInterval: ReturnType<typeof setInterval> | null = null;
+let syncInProgress = false;
 let httpServer: http.Server | null = null;
 let wss: WebSocketServer | null = null;
 let vite: ViteDevServer | null = null;
 let shuttingDown = false;
+let lastElements: InteractableElement[] = [];
+let scanInProgress = false;
+
+function cancelPendingRescan(): void {
+  if (rescanTimer) {
+    clearTimeout(rescanTimer);
+    rescanTimer = null;
+  }
+}
+
+async function pushElements(): Promise<void> {
+  if (shuttingDown || scanInProgress) return;
+
+  const page = session.getPage();
+  if (!page) return;
+
+  scanInProgress = true;
+  try {
+    const info = await scanAndGetPageInfo(page);
+    lastElements = info.elements;
+    broadcast({
+      type: "elements",
+      elements: info.elements,
+      url: info.url,
+      title: info.title,
+      popup: info.popup,
+      screenshot: info.screenshot,
+    });
+  } catch (err) {
+    if (shuttingDown) return;
+    broadcast({
+      type: "error",
+      message: formatUserError(err),
+    });
+  } finally {
+    scanInProgress = false;
+  }
+}
+
+function scheduleRescan(): void {
+  if (shuttingDown || scanInProgress) return;
+  cancelPendingRescan();
+  rescanTimer = setTimeout(() => {
+    rescanTimer = null;
+    void pushElements();
+  }, 300);
+}
 
 function broadcast(message: ServerMessage): void {
   const payload = JSON.stringify(message);
@@ -58,36 +110,28 @@ function send(ws: WebSocket, message: ServerMessage): void {
   }
 }
 
-async function pushElements(): Promise<void> {
-  if (shuttingDown) return;
-
-  const page = session.getPage();
-  if (!page) return;
-
-  try {
-    const info = await scanAndGetPageInfo(page);
-    broadcast({
-      type: "elements",
-      elements: info.elements,
-      url: info.url,
-      title: info.title,
-    });
-  } catch (err) {
-    if (shuttingDown) return;
-    broadcast({
-      type: "error",
-      message: err instanceof Error ? err.message : String(err),
-    });
+function stopPeriodicSync(): void {
+  if (syncInterval) {
+    clearInterval(syncInterval);
+    syncInterval = null;
   }
 }
 
-function scheduleRescan(): void {
-  if (shuttingDown) return;
-  if (rescanTimer) clearTimeout(rescanTimer);
-  rescanTimer = setTimeout(() => {
-    rescanTimer = null;
-    void pushElements();
-  }, 300);
+function startPeriodicSync(): void {
+  stopPeriodicSync();
+  syncInterval = setInterval(() => {
+    void syncOnce();
+  }, SYNC_INTERVAL_MS);
+}
+
+async function syncOnce(): Promise<void> {
+  if (shuttingDown || syncInProgress || !session.active) return;
+  syncInProgress = true;
+  try {
+    await pushElements();
+  } finally {
+    syncInProgress = false;
+  }
 }
 
 async function handleNavigate(ws: WebSocket, url: string): Promise<void> {
@@ -103,11 +147,21 @@ async function handleNavigate(ws: WebSocket, url: string): Promise<void> {
   }
 
   try {
+    cancelPendingRescan();
+    stopPeriodicSync();
     await session.navigate(target, scheduleRescan);
     const page = session.getPage();
     if (!page) throw new Error("Failed to open page");
 
-    const info = await scanAndGetPageInfo(page);
+    scanInProgress = true;
+    let info;
+    try {
+      info = await scanAndGetPageInfo(page);
+    } finally {
+      scanInProgress = false;
+    }
+
+    lastElements = info.elements;
     broadcast({
       type: "session",
       session: { connected: true, url: info.url, title: info.title },
@@ -117,12 +171,16 @@ async function handleNavigate(ws: WebSocket, url: string): Promise<void> {
       elements: info.elements,
       url: info.url,
       title: info.title,
+      popup: info.popup,
+      screenshot: info.screenshot,
     });
+    startPeriodicSync();
   } catch (err) {
     if (shuttingDown) return;
+    scanInProgress = false;
     send(ws, {
       type: "error",
-      message: err instanceof Error ? err.message : String(err),
+      message: formatUserError(err),
     });
   }
 }
@@ -167,21 +225,28 @@ async function handleClientMessage(ws: WebSocket, raw: string): Promise<void> {
       break;
 
     case "disconnect":
+      stopPeriodicSync();
       await session.close();
       broadcast({
         type: "session",
         session: { connected: false, url: "", title: "" },
       });
-      broadcast({ type: "elements", elements: [], url: "", title: "" });
+      broadcast({ type: "elements", elements: [], url: "", title: "", popup: null });
       break;
 
     case "refresh":
       await pushElements();
       break;
 
-    case "click":
-      await handleAction(ws, () => clickElement(session.getPage()!, message.ref), message.ref);
+    case "click": {
+      const point = lastElements.find((item) => item.ref === message.ref)?.point;
+      await handleAction(
+        ws,
+        () => clickElement(session.getPage()!, message.ref, point),
+        message.ref,
+      );
       break;
+    }
 
     case "fill":
       await handleAction(
@@ -234,8 +299,13 @@ function closeHttpServer(): Promise<void> {
       return;
     }
 
+    const finish = () => resolve();
+    const timer = setTimeout(finish, 500);
     httpServer.closeAllConnections?.();
-    httpServer.close(() => resolve());
+    httpServer.close(() => {
+      clearTimeout(timer);
+      finish();
+    });
   });
 }
 
@@ -246,27 +316,58 @@ function closeWsServer(): Promise<void> {
       return;
     }
 
-    wss.close(() => resolve());
+    const finish = () => resolve();
+    const timer = setTimeout(finish, 500);
+    wss.close(() => {
+      clearTimeout(timer);
+      finish();
+    });
   });
 }
 
-async function shutdown(): Promise<void> {
-  if (shuttingDown) return;
+async function shutdown(signal?: string): Promise<void> {
+  if (shuttingDown) {
+    process.exit(0);
+    return;
+  }
   shuttingDown = true;
 
-  if (rescanTimer) {
-    clearTimeout(rescanTimer);
-    rescanTimer = null;
+  const isDevRestart = IS_DEV && signal === "SIGTERM";
+  const maxWait = isDevRestart ? 250 : 1500;
+  const forceExit = setTimeout(() => process.exit(0), maxWait);
+
+  try {
+    if (rescanTimer) {
+      clearTimeout(rescanTimer);
+      rescanTimer = null;
+    }
+    stopPeriodicSync();
+
+    closeWebSockets();
+
+    await Promise.race([
+      (async () => {
+        if (isDevRestart) {
+          await session.closeFast();
+        } else {
+          await session.close();
+        }
+        await Promise.all([closeWsServer(), closeHttpServer(), vite?.close()]);
+      })(),
+      new Promise((resolve) => setTimeout(resolve, Math.max(maxWait - 50, 50))),
+    ]);
+  } finally {
+    clearTimeout(forceExit);
+    process.exit(0);
   }
-
-  closeWebSockets();
-  await session.close();
-  await closeWsServer();
-  await closeHttpServer();
-  await vite?.close();
-
-  process.exit(0);
 }
+
+function registerShutdownHandlers(): void {
+  process.once("SIGINT", () => void shutdown("SIGINT"));
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
+}
+
+registerShutdownHandlers();
 
 async function main(): Promise<void> {
   const app = express();
@@ -301,15 +402,28 @@ async function main(): Promise<void> {
     });
   }
 
-  await new Promise<void>((resolve) => {
-    httpServer!.listen(PORT, HOST, () => {
-      console.log(`Website Emulator running at http://${HOST}:${PORT}`);
-      resolve();
-    });
-  });
+  await new Promise<void>((resolve, reject) => {
+    const server = httpServer!;
 
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
+    const tryListen = (attempt = 0): void => {
+      server.once("error", (err: NodeJS.ErrnoException) => {
+        if (err.code === "EADDRINUSE" && IS_DEV && attempt < 10) {
+          console.warn(`Port ${PORT} busy, retrying in 300ms...`);
+          setTimeout(() => tryListen(attempt + 1), 300);
+          return;
+        }
+        reject(err);
+      });
+
+      server.listen({ port: PORT, host: HOST, exclusive: false }, () => {
+        server.removeAllListeners("error");
+        console.log(`Website Emulator running at http://${HOST}:${PORT}`);
+        resolve();
+      });
+    };
+
+    tryListen();
+  });
 }
 
 void main();

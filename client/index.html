@@ -10,7 +10,7 @@
     <div id="app">
       <header class="header">
         <h1>Website Emulator</h1>
-        <p class="subtitle">Control a real browser page from this panel</p>
+        <p class="subtitle">Visible tabbable elements with highlighted page screenshot</p>
         <form id="nav-form" class="nav-form">
           <input
             id="url-input"
@@ -25,6 +25,10 @@
         </form>
         <div id="status" class="status">Disconnected</div>
       </header>
+      <section id="screenshot-section" class="screenshot-section hidden">
+        <h2 class="screenshot-heading">Page screenshot</h2>
+        <img id="page-screenshot" class="page-screenshot" alt="Highlighted tabbable elements on the live page" />
+      </section>
       <main id="elements" class="elements"></main>
     </div>
     <script type="module" src="/main.ts"></script>

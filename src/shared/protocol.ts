@@ -1,4 +1,5 @@
 export type ElementRole =
+  | "overlay"
   | "button"
   | "link"
   | "textbox"
@@ -16,12 +17,25 @@ export interface InteractableElement {
   ref: string;
   role: ElementRole;
   label: string;
+  order?: number;
+  tabIndex?: number;
   value?: string;
   checked?: boolean;
   options?: SelectOption[];
   href?: string;
   disabled?: boolean;
   inputType?: string;
+  point?: { x: number; y: number };
+  bounds?: { x: number; y: number; width: number; height: number };
+}
+
+export interface PopupScope {
+  label: string;
+}
+
+export interface ScanResult {
+  elements: InteractableElement[];
+  popup: PopupScope | null;
 }
 
 export interface SessionState {
@@ -96,6 +110,8 @@ export interface ElementsServerMessage {
   elements: InteractableElement[];
   url: string;
   title: string;
+  popup?: PopupScope | null;
+  screenshot?: string;
 }
 
 export interface ActionResultServerMessage {
