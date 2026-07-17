@@ -181,6 +181,54 @@ async function isCdpNodeVisible(client: CDPSession, nodeId: number): Promise<boo
   }
 }
 
+const CLEAR_REFS_SCRIPT = `
+  ({ refAttr }) => {
+    const roots = [document];
+    while (roots.length) {
+      const root = roots.pop();
+      if (!root) continue;
+      root.querySelectorAll(\`[\${refAttr}]\`).forEach((el) => el.removeAttribute(refAttr));
+      root.querySelectorAll("*").forEach((el) => {
+        if (el.shadowRoot) roots.push(el.shadowRoot);
+      });
+    }
+  }
+`;
+
+async function clearEmulatorRefsInFrames(page: Page): Promise<void> {
+  const args = JSON.stringify({ refAttr: REF_ATTR });
+  for (const frame of page.frames()) {
+    try {
+      await frame.evaluate(`(${CLEAR_REFS_SCRIPT})(${args})`);
+    } catch {
+      // Detached or inaccessible frame.
+    }
+  }
+}
+
+async function clearEmulatorRefsPierced(page: Page): Promise<void> {
+  const client = await page.context().newCDPSession(page);
+  await client.send("DOM.enable");
+  await client.send("Page.enable");
+
+  const roots = await getAllPiercedRoots(client);
+  const nodes = collectPiercedNodes(roots);
+
+  for (const node of nodes) {
+    const attrs = getCdpAttributes(node);
+    if (!attrs[REF_ATTR]) continue;
+    try {
+      await client.send("DOM.removeAttribute", { nodeId: node.nodeId, name: REF_ATTR });
+    } catch {
+      // Node may have been removed between walks.
+    }
+  }
+}
+
+async function clearAllEmulatorRefs(page: Page): Promise<void> {
+  await Promise.all([clearEmulatorRefsInFrames(page), clearEmulatorRefsPierced(page)]);
+}
+
 async function stampCdpNodeRef(client: CDPSession, nodeId: number, ref: string): Promise<void> {
   const { object } = await client.send("DOM.resolveNode", { nodeId });
   if (!object.objectId) return;
@@ -368,10 +416,19 @@ const FRAME_TABBABLE_SCRIPT = `
 
     const all = [];
     try {
-      const nodes = Array.from(document.querySelectorAll("*") ?? []);
-      for (const el of nodes) {
-        if (el instanceof HTMLElement && isTabbable(el) && !el.hasAttribute(refAttr)) {
-          all.push(el);
+      const roots = [document];
+      while (roots.length) {
+        const root = roots.pop();
+        if (!root) continue;
+        root.querySelectorAll("[" + refAttr + "]").forEach((el) => el.removeAttribute(refAttr));
+        const nodes = Array.from(root.querySelectorAll("*") ?? []);
+        for (const el of nodes) {
+          if (el instanceof HTMLElement && isTabbable(el)) {
+            all.push(el);
+          }
+          if (el instanceof HTMLElement && el.shadowRoot) {
+            roots.push(el.shadowRoot);
+          }
         }
       }
     } catch {
@@ -473,6 +530,8 @@ function sortByTabOrder(elements: InteractableElement[]): InteractableElement[] 
 }
 
 export async function scanInteractables(page: Page): Promise<ScanResult> {
+  await clearAllEmulatorRefs(page);
+
   let result: ScanResult = { elements: [], popup: null };
   try {
     result = (await page.evaluate(`(${loadScanInPage()})()`)) as ScanResult;

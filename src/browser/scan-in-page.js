@@ -1,9 +1,20 @@
 () => {
   const REF_ATTR_LOCAL = "data-emulator-ref";
 
-  document.querySelectorAll(`[${REF_ATTR_LOCAL}]`).forEach((el) => {
-    el.removeAttribute(REF_ATTR_LOCAL);
-  });
+  const clearRefs = (root) => {
+    const roots = [root];
+    while (roots.length) {
+      const current = roots.pop();
+      if (!current || typeof current.querySelectorAll !== "function") continue;
+      current.querySelectorAll(`[${REF_ATTR_LOCAL}]`).forEach((el) => {
+        el.removeAttribute(REF_ATTR_LOCAL);
+      });
+      current.querySelectorAll("*").forEach((el) => {
+        if (el.shadowRoot) roots.push(el.shadowRoot);
+      });
+    }
+  };
+  clearRefs(document);
 
   const isInert = (el) => {
     let node = el;
