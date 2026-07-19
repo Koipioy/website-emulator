@@ -1,5 +1,8 @@
 import http from "node:http";
 import path from "node:path";
+import { exec } from "node:child_process";
+import { createInterface } from "node:readline/promises";
+import { stdin as input, stdout as output } from "node:process";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -13,19 +16,23 @@ import {
   scrollElement,
   scrollPage,
   selectElement,
+  type ActionResult,
 } from "./browser/actions.js";
 import { BrowserSession } from "./browser/session.js";
+import { actionsForElement } from "./shared/element-actions.js";
 import {
   type ClientMessage,
   type InteractableElement,
+  type PopupScope,
   type ServerMessage,
   type SessionState,
   parseClientMessage,
 } from "./shared/protocol.js";
 import { formatUserError } from "./shared/errors.js";
+import { buildInstructionsPrompt } from "./api/instructions.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = 3000;
+const DEFAULT_PORT = 3000;
 const HOST = "127.0.0.1";
 const IS_DEV = process.env.DEV === "1";
 const SYNC_INTERVAL_MS = 3000;
@@ -42,7 +49,34 @@ let vite: ViteDevServer | null = null;
 let shuttingDown = false;
 let lastElements: InteractableElement[] = [];
 let lastButtons: InteractableElement[] = [];
-let scanInProgress = false;
+let lastSnapshot: PageSnapshot | null = null;
+let activeScan: ReturnType<typeof scanAndGetPageInfo> | null = null;
+
+interface PageSnapshot {
+  url: string;
+  title: string;
+  elements: InteractableElement[];
+  buttons: InteractableElement[];
+  screenshot?: string;
+  popup: PopupScope | null;
+}
+
+function updateSnapshot(info: PageSnapshot): void {
+  lastElements = info.elements;
+  lastButtons = info.buttons;
+  lastSnapshot = info;
+}
+
+function clearSnapshot(): void {
+  lastElements = [];
+  lastButtons = [];
+  lastSnapshot = null;
+}
+
+function wantsRefresh(req: express.Request): boolean {
+  const value = req.query.refresh;
+  return value === "1" || value === "true";
+}
 
 function cancelPendingRescan(): void {
   if (rescanTimer) {
@@ -51,17 +85,256 @@ function cancelPendingRescan(): void {
   }
 }
 
-async function pushElements(): Promise<void> {
-  if (shuttingDown || scanInProgress) return;
+async function fetchCurrentPageInfo() {
+  if (shuttingDown) {
+    throw new Error("Server is shutting down");
+  }
 
   const page = session.getPage();
-  if (!page) return;
+  if (!page) {
+    return null;
+  }
 
-  scanInProgress = true;
+  if (activeScan) {
+    return activeScan;
+  }
+
+  activeScan = scanAndGetPageInfo(page)
+    .then((info) => {
+      updateSnapshot({
+        url: info.url,
+        title: info.title,
+        elements: info.elements,
+        buttons: info.buttons,
+        screenshot: info.screenshot,
+        popup: info.popup,
+      });
+      return info;
+    })
+    .finally(() => {
+      activeScan = null;
+    });
+
+  return activeScan;
+}
+
+async function getPageSnapshot(
+  forceRefresh = false,
+): Promise<{ snapshot: PageSnapshot; cached: boolean } | null> {
+  if (!session.getPage()) return null;
+  if (!forceRefresh && lastSnapshot) {
+    return { snapshot: lastSnapshot, cached: true };
+  }
+
+  const info = await fetchCurrentPageInfo();
+  if (!info || !lastSnapshot) return null;
+  return { snapshot: lastSnapshot, cached: false };
+}
+
+function serializeElement(el: InteractableElement) {
+  return {
+    number: el.order,
+    ref: el.ref,
+    role: el.role,
+    label: el.label,
+    value: el.value,
+    checked: el.checked,
+    href: el.href,
+    disabled: el.disabled,
+    inputType: el.inputType,
+    options: el.options,
+    bounds: el.bounds,
+    actions: actionsForElement(el),
+  };
+}
+
+function screenshotDataUrlToBuffer(dataUrl: string): Buffer | null {
+  const match = /^data:image\/\w+;base64,(.+)$/.exec(dataUrl);
+  if (!match?.[1]) return null;
+  return Buffer.from(match[1], "base64");
+}
+
+type ElementActionType = "click" | "fill" | "select" | "check" | "press" | "scroll";
+
+interface ApiActionRequest {
+  ref?: string;
+  id?: string;
+  number?: number;
+  action?: string;
+  value?: string;
+  checked?: boolean;
+  key?: string;
+}
+
+function resolveElementRef(body: ApiActionRequest): string | null {
+  if (typeof body.ref === "string" && body.ref.trim()) return body.ref.trim();
+  if (typeof body.id === "string" && body.id.trim()) return body.id.trim();
+  if (typeof body.number === "number") {
+    const match = [...lastElements, ...lastButtons].find((el) => el.order === body.number);
+    return match?.ref ?? null;
+  }
+  return null;
+}
+
+async function performElementAction(
+  ref: string,
+  action: ElementActionType,
+  params: { value?: string; checked?: boolean; key?: string },
+): Promise<ActionResult> {
+  const page = session.getPage();
+  if (!page) {
+    return { ref, success: false, error: "No active browser session" };
+  }
+
+  switch (action) {
+    case "click": {
+      const point =
+        lastElements.find((item) => item.ref === ref)?.point ??
+        lastButtons.find((item) => item.ref === ref)?.point;
+      return clickElement(page, ref, point);
+    }
+    case "fill":
+      if (typeof params.value !== "string") {
+        return { ref, success: false, error: "Missing required parameter: value" };
+      }
+      return fillElement(page, ref, params.value);
+    case "select":
+      if (typeof params.value !== "string") {
+        return { ref, success: false, error: "Missing required parameter: value" };
+      }
+      return selectElement(page, ref, params.value);
+    case "check":
+      if (typeof params.checked !== "boolean") {
+        return { ref, success: false, error: "Missing required parameter: checked" };
+      }
+      return checkElement(page, ref, params.checked);
+    case "press":
+      if (typeof params.key !== "string" || !params.key.trim()) {
+        return { ref, success: false, error: "Missing required parameter: key" };
+      }
+      return pressElement(page, ref, params.key);
+    case "scroll":
+      return scrollElement(page, ref);
+    default:
+      return { ref, success: false, error: `Unknown action: ${action}` };
+  }
+}
+
+async function runElementAction(body: ApiActionRequest): Promise<ActionResult> {
+  if (shuttingDown) {
+    return { ref: "", success: false, error: "Server is shutting down" };
+  }
+
+  const ref = resolveElementRef(body);
+  if (!ref) {
+    return { ref: "", success: false, error: "Element id is required (ref, id, or number)" };
+  }
+
+  if (!body.action || typeof body.action !== "string") {
+    return { ref, success: false, error: "Action is required" };
+  }
+
+  const action = body.action as ElementActionType;
+  const result = await performElementAction(ref, action, {
+    value: body.value,
+    checked: body.checked,
+    key: body.key,
+  });
+
+  if (result.success && !shuttingDown) {
+    await pushElements();
+  }
+
+  return result;
+}
+
+function registerApiRoutes(app: express.Express): void {
+  app.use(express.json({ limit: "1mb" }));
+
+  app.get("/instructions", (req, res) => {
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    res.json({ systemPrompt: buildInstructionsPrompt(baseUrl) });
+  });
+
+  app.get("/api/screenshot", async (req, res) => {
+    try {
+      const result = await getPageSnapshot(wantsRefresh(req));
+      if (!result) {
+        res.status(503).json({ error: "No active browser session" });
+        return;
+      }
+
+      const image = result.snapshot.screenshot
+        ? screenshotDataUrlToBuffer(result.snapshot.screenshot)
+        : null;
+      if (!image) {
+        res.status(500).json({ error: "Failed to capture screenshot" });
+        return;
+      }
+
+      res.setHeader("Content-Type", "image/jpeg");
+      res.setHeader("Cache-Control", "no-store");
+      res.send(image);
+    } catch (err) {
+      res.status(500).json({ error: formatUserError(err) });
+    }
+  });
+
+  app.get("/api/elements", async (req, res) => {
+    try {
+      const result = await getPageSnapshot(wantsRefresh(req));
+      if (!result) {
+        res.status(503).json({ error: "No active browser session" });
+        return;
+      }
+
+      const { snapshot, cached } = result;
+      res.json({
+        url: snapshot.url,
+        title: snapshot.title,
+        elements: snapshot.elements.map(serializeElement),
+        buttons: snapshot.buttons.map(serializeElement),
+        cached,
+      });
+    } catch (err) {
+      res.status(500).json({ error: formatUserError(err) });
+    }
+  });
+
+  app.post("/api/action", async (req, res) => {
+    try {
+      const result = await runElementAction(req.body as ApiActionRequest);
+
+      if (result.error === "No active browser session") {
+        res.status(503).json(result);
+        return;
+      }
+
+      if (
+        !result.success &&
+        (result.error?.includes("required") ||
+          result.error?.includes("Unknown action") ||
+          result.error === "Action is required" ||
+          result.error === "Element id is required (ref, id, or number)")
+      ) {
+        res.status(400).json(result);
+        return;
+      }
+
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: formatUserError(err) });
+    }
+  });
+}
+
+async function pushElements(): Promise<void> {
+  if (shuttingDown) return;
+
   try {
-    const info = await scanAndGetPageInfo(page);
-    lastElements = info.elements;
-    lastButtons = info.buttons;
+    const info = await fetchCurrentPageInfo();
+    if (!info) return;
+
     broadcast({
       type: "elements",
       elements: info.elements,
@@ -77,13 +350,11 @@ async function pushElements(): Promise<void> {
       type: "error",
       message: formatUserError(err),
     });
-  } finally {
-    scanInProgress = false;
   }
 }
 
 function scheduleRescan(): void {
-  if (shuttingDown || scanInProgress) return;
+  if (shuttingDown) return;
   cancelPendingRescan();
   rescanTimer = setTimeout(() => {
     rescanTimer = null;
@@ -158,16 +429,9 @@ async function handleNavigate(ws: WebSocket, url: string): Promise<void> {
     const page = session.getPage();
     if (!page) throw new Error("Failed to open page");
 
-    scanInProgress = true;
-    let info;
-    try {
-      info = await scanAndGetPageInfo(page);
-    } finally {
-      scanInProgress = false;
-    }
+    const info = await fetchCurrentPageInfo();
+    if (!info) throw new Error("Failed to scan page");
 
-    lastElements = info.elements;
-    lastButtons = info.buttons;
     broadcast({
       type: "session",
       session: { connected: true, url: info.url, title: info.title },
@@ -184,7 +448,6 @@ async function handleNavigate(ws: WebSocket, url: string): Promise<void> {
     startPeriodicSync();
   } catch (err) {
     if (shuttingDown) return;
-    scanInProgress = false;
     send(ws, {
       type: "error",
       message: formatUserError(err),
@@ -194,7 +457,7 @@ async function handleNavigate(ws: WebSocket, url: string): Promise<void> {
 
 async function handleAction(
   ws: WebSocket,
-  action: () => Promise<{ ref: string; success: boolean; error?: string }>,
+  action: () => Promise<ActionResult>,
   ref: string,
 ): Promise<void> {
   if (shuttingDown) return;
@@ -234,6 +497,7 @@ async function handleClientMessage(ws: WebSocket, raw: string): Promise<void> {
     case "disconnect":
       stopPeriodicSync();
       await session.close();
+      clearSnapshot();
       broadcast({
         type: "session",
         session: { connected: false, url: "", title: "" },
@@ -245,22 +509,18 @@ async function handleClientMessage(ws: WebSocket, raw: string): Promise<void> {
       await pushElements();
       break;
 
-    case "click": {
-      const point =
-        lastElements.find((item) => item.ref === message.ref)?.point ??
-        lastButtons.find((item) => item.ref === message.ref)?.point;
+    case "click":
       await handleAction(
         ws,
-        () => clickElement(session.getPage()!, message.ref, point),
+        () => performElementAction(message.ref, "click", {}),
         message.ref,
       );
       break;
-    }
 
     case "fill":
       await handleAction(
         ws,
-        () => fillElement(session.getPage()!, message.ref, message.value),
+        () => performElementAction(message.ref, "fill", { value: message.value }),
         message.ref,
       );
       break;
@@ -268,7 +528,7 @@ async function handleClientMessage(ws: WebSocket, raw: string): Promise<void> {
     case "select":
       await handleAction(
         ws,
-        () => selectElement(session.getPage()!, message.ref, message.value),
+        () => performElementAction(message.ref, "select", { value: message.value }),
         message.ref,
       );
       break;
@@ -276,7 +536,7 @@ async function handleClientMessage(ws: WebSocket, raw: string): Promise<void> {
     case "check":
       await handleAction(
         ws,
-        () => checkElement(session.getPage()!, message.ref, message.checked),
+        () => performElementAction(message.ref, "check", { checked: message.checked }),
         message.ref,
       );
       break;
@@ -284,7 +544,7 @@ async function handleClientMessage(ws: WebSocket, raw: string): Promise<void> {
     case "press":
       await handleAction(
         ws,
-        () => pressElement(session.getPage()!, message.ref, message.key),
+        () => performElementAction(message.ref, "press", { key: message.key }),
         message.ref,
       );
       break;
@@ -292,7 +552,7 @@ async function handleClientMessage(ws: WebSocket, raw: string): Promise<void> {
     case "scroll":
       await handleAction(
         ws,
-        () => scrollElement(session.getPage()!, message.ref),
+        () => performElementAction(message.ref, "scroll", {}),
         message.ref,
       );
       break;
@@ -394,8 +654,68 @@ function registerShutdownHandlers(): void {
 
 registerShutdownHandlers();
 
+function isValidPort(port: number): boolean {
+  return Number.isInteger(port) && port >= 1 && port <= 65535;
+}
+
+async function resolvePort(): Promise<number> {
+  if (process.env.PORT) {
+    const port = Number(process.env.PORT);
+    if (!isValidPort(port)) {
+      throw new Error(`Invalid PORT environment variable: ${process.env.PORT}`);
+    }
+    return port;
+  }
+
+  if (!input.isTTY) return DEFAULT_PORT;
+
+  const rl = createInterface({ input, output });
+  try {
+    while (true) {
+      const answer = await rl.question(`Port to host on [${DEFAULT_PORT}]: `);
+      const port = answer.trim() ? Number(answer) : DEFAULT_PORT;
+      if (isValidPort(port)) return port;
+      console.log("Enter a valid port number (1-65535).");
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+function openBrowser(url: string): void {
+  const command =
+    process.platform === "win32"
+      ? `start "" "${url}"`
+      : process.platform === "darwin"
+        ? `open "${url}"`
+        : `xdg-open "${url}"`;
+
+  exec(command, (error) => {
+    if (error) {
+      console.error(`Could not open browser automatically: ${error.message}`);
+      console.error(`Open this URL manually: ${url}`);
+    }
+  });
+}
+
+async function waitForEnterToOpen(url: string): Promise<void> {
+  if (!input.isTTY) return;
+
+  const rl = createInterface({ input, output });
+  try {
+    await rl.question(`Press Enter to open ${url} in your browser… `);
+    openBrowser(url);
+  } finally {
+    rl.close();
+  }
+}
+
 async function main(): Promise<void> {
+  const port = await resolvePort();
+  const siteUrl = `http://${HOST}:${port}`;
+
   const app = express();
+  registerApiRoutes(app);
   httpServer = http.createServer(app);
   wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
@@ -433,22 +753,24 @@ async function main(): Promise<void> {
     const tryListen = (attempt = 0): void => {
       server.once("error", (err: NodeJS.ErrnoException) => {
         if (err.code === "EADDRINUSE" && IS_DEV && attempt < 10) {
-          console.warn(`Port ${PORT} busy, retrying in 300ms...`);
+          console.warn(`Port ${port} busy, retrying in 300ms...`);
           setTimeout(() => tryListen(attempt + 1), 300);
           return;
         }
         reject(err);
       });
 
-      server.listen({ port: PORT, host: HOST, exclusive: false }, () => {
+      server.listen({ port, host: HOST, exclusive: false }, () => {
         server.removeAllListeners("error");
-        console.log(`Website Emulator running at http://${HOST}:${PORT}`);
+        console.log(`Website Emulator running at ${siteUrl}`);
         resolve();
       });
     };
 
     tryListen();
   });
+
+  await waitForEnterToOpen(siteUrl);
 }
 
 void main();

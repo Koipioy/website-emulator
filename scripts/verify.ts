@@ -96,6 +96,14 @@ async function runTests(): Promise<void> {
     }
     console.log("✓ WebSocket connected");
 
+    const instructionsRes = await fetch(`${BASE}/instructions`);
+    if (!instructionsRes.ok) throw new Error(`GET /instructions failed: ${instructionsRes.status}`);
+    const instructionsJson = (await instructionsRes.json()) as { systemPrompt?: string };
+    if (!instructionsJson.systemPrompt?.includes("/api/screenshot")) {
+      throw new Error("GET /instructions missing API documentation");
+    }
+    console.log("✓ GET /instructions returned system prompt");
+
     send(ws, { type: "navigate", url: "https://example.com" });
     const elementsMsg = await nextMessage(ws, "elements", 45000);
     if (elementsMsg.type !== "elements") throw new Error("Expected elements message");
@@ -109,7 +117,44 @@ async function runTests(): Promise<void> {
       `✓ Scanned example.com — ${elementsMsg.elements.length} visible element(s), ${links.length} link(s), screenshot included`,
     );
 
+    const elementsRes = await fetch(`${BASE}/api/elements`);
+    if (!elementsRes.ok) throw new Error(`GET /api/elements failed: ${elementsRes.status}`);
+    const elementsJson = (await elementsRes.json()) as {
+      url: string;
+      elements: Array<{ number?: number; ref: string; actions: Array<{ type: string }> }>;
+    };
+    if (!elementsJson.url.includes("example.com")) throw new Error("API elements missing page url");
+    if (elementsJson.elements.length === 0) throw new Error("API elements list is empty");
+    if (!elementsJson.elements[0]!.actions.some((action) => action.type === "click")) {
+      throw new Error("API elements missing click action");
+    }
+    console.log(`✓ GET /api/elements returned ${elementsJson.elements.length} element(s)`);
+
+    const screenshotRes = await fetch(`${BASE}/api/screenshot`);
+    if (!screenshotRes.ok) throw new Error(`GET /api/screenshot failed: ${screenshotRes.status}`);
+    const contentType = screenshotRes.headers.get("content-type");
+    if (!contentType?.includes("image/jpeg")) {
+      throw new Error(`Expected image/jpeg from /api/screenshot, got ${contentType}`);
+    }
+    const screenshotBytes = await screenshotRes.arrayBuffer();
+    if (screenshotBytes.byteLength < 1000) {
+      throw new Error("Screenshot response too small");
+    }
+    console.log(`✓ GET /api/screenshot returned ${screenshotBytes.byteLength} byte JPEG`);
+
     const linkRef = links[0]!.ref;
+    const apiClickRes = await fetch(`${BASE}/api/action`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ref: linkRef, action: "click" }),
+    });
+    if (!apiClickRes.ok) throw new Error(`POST /api/action failed: ${apiClickRes.status}`);
+    const apiClickJson = (await apiClickRes.json()) as { ref: string; success: boolean; error?: string };
+    if (!apiClickJson.success) {
+      throw new Error(`POST /api/action click failed: ${apiClickJson.error ?? "unknown"}`);
+    }
+    console.log("✓ POST /api/action click succeeded");
+
     send(ws, { type: "click", ref: linkRef });
     const clickResult = await nextMessage(ws, "action_result", 15000);
     if (clickResult.type !== "action_result" || !clickResult.success) {
@@ -142,6 +187,12 @@ async function runTests(): Promise<void> {
       throw new Error("Expected disconnected session after disconnect");
     }
     console.log("✓ Disconnect closed browser session");
+
+    const disconnectedElementsRes = await fetch(`${BASE}/api/elements`);
+    if (disconnectedElementsRes.status !== 503) {
+      throw new Error(`Expected 503 from /api/elements after disconnect, got ${disconnectedElementsRes.status}`);
+    }
+    console.log("✓ GET /api/elements returns 503 when disconnected");
 
     ws.close();
     console.log("\nAll verification checks passed.");

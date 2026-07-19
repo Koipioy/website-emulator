@@ -74,28 +74,34 @@ export async function captureHighlightedScreenshot(
   page: Page,
   elements: InteractableElement[],
 ): Promise<string | undefined> {
+  const buffer = await captureHighlightedScreenshotBuffer(page, elements);
+  if (!buffer) return undefined;
+  return `data:image/jpeg;base64,${buffer.toString("base64")}`;
+}
+
+export async function captureHighlightedScreenshotBuffer(
+  page: Page,
+  elements: InteractableElement[],
+): Promise<Buffer | null> {
   try {
     const highlighted = elements.length > 0 ? await refreshBounds(page, elements) : [];
     const screenshot = await page.screenshot({ type: "png", scale: "css" });
     const metadata = await sharp(screenshot).metadata();
     const width = metadata.width ?? 0;
     const height = metadata.height ?? 0;
-    if (width === 0 || height === 0) return undefined;
+    if (width === 0 || height === 0) return null;
 
     if (highlighted.length === 0) {
-      const output = await sharp(screenshot).jpeg({ quality: 70 }).toBuffer();
-      return `data:image/jpeg;base64,${output.toString("base64")}`;
+      return sharp(screenshot).jpeg({ quality: 70 }).toBuffer();
     }
 
     const overlay = buildHighlightSvg(width, height, highlighted);
-    const output = await sharp(screenshot)
+    return sharp(screenshot)
       .composite([{ input: Buffer.from(overlay), top: 0, left: 0 }])
       .jpeg({ quality: 70 })
       .toBuffer();
-
-    return `data:image/jpeg;base64,${output.toString("base64")}`;
   } catch (err) {
     console.error("Screenshot capture failed:", err);
-    return undefined;
+    return null;
   }
 }
