@@ -80,6 +80,16 @@ export interface PressMessage {
   key: string;
 }
 
+export interface ScrollMessage {
+  type: "scroll";
+  ref: string;
+}
+
+export interface ScrollPageMessage {
+  type: "scroll_page";
+  direction: "up" | "down";
+}
+
 export interface RefreshMessage {
   type: "refresh";
 }
@@ -95,6 +105,8 @@ export type ClientMessage =
   | SelectMessage
   | CheckMessage
   | PressMessage
+  | ScrollMessage
+  | ScrollPageMessage
   | RefreshMessage
   | DisconnectMessage;
 
@@ -108,6 +120,7 @@ export interface SessionServerMessage {
 export interface ElementsServerMessage {
   type: "elements";
   elements: InteractableElement[];
+  buttons: InteractableElement[];
   url: string;
   title: string;
   popup?: PopupScope | null;

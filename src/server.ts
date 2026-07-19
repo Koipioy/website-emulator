@@ -10,6 +10,8 @@ import {
   fillElement,
   pressElement,
   scanAndGetPageInfo,
+  scrollElement,
+  scrollPage,
   selectElement,
 } from "./browser/actions.js";
 import { BrowserSession } from "./browser/session.js";
@@ -39,6 +41,7 @@ let wss: WebSocketServer | null = null;
 let vite: ViteDevServer | null = null;
 let shuttingDown = false;
 let lastElements: InteractableElement[] = [];
+let lastButtons: InteractableElement[] = [];
 let scanInProgress = false;
 
 function cancelPendingRescan(): void {
@@ -58,9 +61,11 @@ async function pushElements(): Promise<void> {
   try {
     const info = await scanAndGetPageInfo(page);
     lastElements = info.elements;
+    lastButtons = info.buttons;
     broadcast({
       type: "elements",
       elements: info.elements,
+      buttons: info.buttons,
       url: info.url,
       title: info.title,
       popup: info.popup,
@@ -162,6 +167,7 @@ async function handleNavigate(ws: WebSocket, url: string): Promise<void> {
     }
 
     lastElements = info.elements;
+    lastButtons = info.buttons;
     broadcast({
       type: "session",
       session: { connected: true, url: info.url, title: info.title },
@@ -169,6 +175,7 @@ async function handleNavigate(ws: WebSocket, url: string): Promise<void> {
     broadcast({
       type: "elements",
       elements: info.elements,
+      buttons: info.buttons,
       url: info.url,
       title: info.title,
       popup: info.popup,
@@ -231,7 +238,7 @@ async function handleClientMessage(ws: WebSocket, raw: string): Promise<void> {
         type: "session",
         session: { connected: false, url: "", title: "" },
       });
-      broadcast({ type: "elements", elements: [], url: "", title: "", popup: null });
+      broadcast({ type: "elements", elements: [], buttons: [], url: "", title: "", popup: null });
       break;
 
     case "refresh":
@@ -239,7 +246,9 @@ async function handleClientMessage(ws: WebSocket, raw: string): Promise<void> {
       break;
 
     case "click": {
-      const point = lastElements.find((item) => item.ref === message.ref)?.point;
+      const point =
+        lastElements.find((item) => item.ref === message.ref)?.point ??
+        lastButtons.find((item) => item.ref === message.ref)?.point;
       await handleAction(
         ws,
         () => clickElement(session.getPage()!, message.ref, point),
@@ -277,6 +286,22 @@ async function handleClientMessage(ws: WebSocket, raw: string): Promise<void> {
         ws,
         () => pressElement(session.getPage()!, message.ref, message.key),
         message.ref,
+      );
+      break;
+
+    case "scroll":
+      await handleAction(
+        ws,
+        () => scrollElement(session.getPage()!, message.ref),
+        message.ref,
+      );
+      break;
+
+    case "scroll_page":
+      await handleAction(
+        ws,
+        () => scrollPage(session.getPage()!, message.direction),
+        "page",
       );
       break;
 

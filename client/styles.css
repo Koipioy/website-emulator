@@ -109,6 +109,26 @@ button:disabled {
   border-color: #14532d;
 }
 
+.buttons-section {
+  margin-top: 1.5rem;
+}
+
+.buttons-section.hidden {
+  display: none;
+}
+
+.buttons-banner {
+  border-color: #4a3b7a;
+  background: #221a40;
+  color: #c4b5fd;
+}
+
+.button-card .tab-order {
+  color: #c4b5fd;
+  background: #221a40;
+  border-color: #4a3b7a;
+}
+
 .elements {
   margin-top: 1.5rem;
 }

@@ -6,6 +6,7 @@ import type { ElementRole, InteractableElement, ScanResult } from "../shared/pro
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REF_ATTR = "data-emulator-ref";
+export const BTN_REF_ATTR = "data-emulator-btn-ref";
 
 type CdpDomNode = {
   nodeId: number;
@@ -35,6 +36,10 @@ function loadScanInPage(): string {
   return readFileSync(path.join(__dirname, "scan-in-page.js"), "utf8").trim().replace(/;\s*$/, "");
 }
 
+function loadScanVisibleButtons(): string {
+  return readFileSync(path.join(__dirname, "scan-visible-buttons.js"), "utf8").trim().replace(/;\s*$/, "");
+}
+
 function nextRef(elements: InteractableElement[]): string {
   let counter = 0;
   for (const item of elements) {
@@ -42,6 +47,19 @@ function nextRef(elements: InteractableElement[]): string {
     if (!Number.isNaN(n)) counter = Math.max(counter, n);
   }
   return `e${counter + 1}`;
+}
+
+function nextBtnRef(elements: InteractableElement[]): string {
+  let counter = 0;
+  for (const item of elements) {
+    const n = Number.parseInt(item.ref.replace(/^b/, ""), 10);
+    if (!Number.isNaN(n)) counter = Math.max(counter, n);
+  }
+  return `b${counter + 1}`;
+}
+
+export function refAttrForRef(ref: string): string {
+  return ref.startsWith("b") ? BTN_REF_ATTR : REF_ATTR;
 }
 
 function getCdpAttributes(node: CdpDomNode): Record<string, string> {
@@ -93,6 +111,16 @@ function isCdpTabbable(nodeName: string, attrs: Record<string, string>): boolean
   if (attrs["aria-hidden"] === "true") return false;
   if (isNaturallyTabbableTag(nodeName, attrs)) return true;
   return attrs.tabindex !== undefined && tabIndex >= 0;
+}
+
+function isCdpButtonLike(nodeName: string, attrs: Record<string, string>): boolean {
+  const tag = nodeName.toUpperCase();
+  if (tag === "BUTTON") return true;
+  if (tag === "INPUT") {
+    const type = (attrs.type || "text").toLowerCase();
+    return type === "button" || type === "submit" || type === "reset";
+  }
+  return attrs.role?.toLowerCase() === "button";
 }
 
 function isNaturallyTabbableTag(nodeName: string, attrs: Record<string, string>): boolean {
@@ -196,17 +224,19 @@ const CLEAR_REFS_SCRIPT = `
 `;
 
 async function clearEmulatorRefsInFrames(page: Page): Promise<void> {
-  const args = JSON.stringify({ refAttr: REF_ATTR });
-  for (const frame of page.frames()) {
-    try {
-      await frame.evaluate(`(${CLEAR_REFS_SCRIPT})(${args})`);
-    } catch {
-      // Detached or inaccessible frame.
+  for (const refAttr of [REF_ATTR, BTN_REF_ATTR]) {
+    const args = JSON.stringify({ refAttr });
+    for (const frame of page.frames()) {
+      try {
+        await frame.evaluate(`(${CLEAR_REFS_SCRIPT})(${args})`);
+      } catch {
+        // Detached or inaccessible frame.
+      }
     }
   }
 }
 
-async function clearEmulatorRefsPierced(page: Page): Promise<void> {
+async function clearEmulatorRefsPierced(page: Page, attr: string): Promise<void> {
   const client = await page.context().newCDPSession(page);
   await client.send("DOM.enable");
   await client.send("Page.enable");
@@ -216,9 +246,9 @@ async function clearEmulatorRefsPierced(page: Page): Promise<void> {
 
   for (const node of nodes) {
     const attrs = getCdpAttributes(node);
-    if (!attrs[REF_ATTR]) continue;
+    if (!attrs[attr]) continue;
     try {
-      await client.send("DOM.removeAttribute", { nodeId: node.nodeId, name: REF_ATTR });
+      await client.send("DOM.removeAttribute", { nodeId: node.nodeId, name: attr });
     } catch {
       // Node may have been removed between walks.
     }
@@ -226,17 +256,38 @@ async function clearEmulatorRefsPierced(page: Page): Promise<void> {
 }
 
 async function clearAllEmulatorRefs(page: Page): Promise<void> {
-  await Promise.all([clearEmulatorRefsInFrames(page), clearEmulatorRefsPierced(page)]);
+  await clearEmulatorRefsInFrames(page);
+  await Promise.all([
+    clearEmulatorRefsPierced(page, REF_ATTR),
+    clearEmulatorRefsPierced(page, BTN_REF_ATTR),
+  ]);
 }
 
-async function stampCdpNodeRef(client: CDPSession, nodeId: number, ref: string): Promise<void> {
+async function clearAllButtonRefs(page: Page): Promise<void> {
+  const args = JSON.stringify({ refAttr: BTN_REF_ATTR });
+  for (const frame of page.frames()) {
+    try {
+      await frame.evaluate(`(${CLEAR_REFS_SCRIPT})(${args})`);
+    } catch {
+      // Detached or inaccessible frame.
+    }
+  }
+  await clearEmulatorRefsPierced(page, BTN_REF_ATTR);
+}
+
+async function stampCdpNodeRef(
+  client: CDPSession,
+  nodeId: number,
+  ref: string,
+  attr = REF_ATTR,
+): Promise<void> {
   const { object } = await client.send("DOM.resolveNode", { nodeId });
   if (!object.objectId) return;
 
   await client.send("Runtime.callFunctionOn", {
     objectId: object.objectId,
     functionDeclaration: `function(attr, refId) { this.setAttribute(attr, refId); }`,
-    arguments: [{ value: REF_ATTR }, { value: ref }],
+    arguments: [{ value: attr }, { value: ref }],
   });
 }
 
@@ -286,6 +337,20 @@ function isDuplicate(
       if (dx < 12 && dy < 12) return true;
     }
     return item.label === candidate.label && item.tabIndex === candidate.tabIndex;
+  });
+}
+
+function isButtonDuplicate(
+  candidate: { label: string; point?: { x: number; y: number } },
+  existing: InteractableElement[],
+): boolean {
+  return existing.some((item) => {
+    if (item.point && candidate.point) {
+      const dx = Math.abs(item.point.x - candidate.point.x);
+      const dy = Math.abs(item.point.y - candidate.point.y);
+      if (dx < 12 && dy < 12) return true;
+    }
+    return item.label === candidate.label;
   });
 }
 
@@ -339,6 +404,200 @@ async function scanPiercedTabbables(
   }
 
   return found;
+}
+
+async function scanPiercedButtons(
+  page: Page,
+  existing: InteractableElement[],
+): Promise<InteractableElement[]> {
+  const client = await page.context().newCDPSession(page);
+  await Promise.all([
+    client.send("DOM.enable"),
+    client.send("CSS.enable"),
+    client.send("Page.enable"),
+  ]);
+
+  const roots = await getAllPiercedRoots(client);
+  const nodes = collectPiercedNodes(roots);
+  const found: InteractableElement[] = [];
+
+  for (const node of nodes) {
+    const attrs = getCdpAttributes(node);
+    if (attrs[BTN_REF_ATTR]) continue;
+    if (!isCdpButtonLike(node.nodeName, attrs)) continue;
+    if (!(await isCdpNodeVisible(client, node.nodeId))) continue;
+
+    const point = await getBoxCenter(client, node.nodeId);
+    const candidate = {
+      label: inferCdpLabel(node, attrs),
+      point: point ?? undefined,
+    };
+
+    if (isButtonDuplicate(candidate, [...existing, ...found])) continue;
+
+    const ref = nextBtnRef([...existing, ...found]);
+    await stampCdpNodeRef(client, node.nodeId, ref, BTN_REF_ATTR);
+
+    found.push({
+      ref,
+      role: "button",
+      label: candidate.label,
+      disabled: attrs.disabled === "true" || attrs["aria-disabled"] === "true",
+      point: candidate.point,
+    });
+  }
+
+  return found;
+}
+
+const FRAME_BUTTON_SCRIPT = `
+  ({ refAttr, startCounter }) => {
+    const isInert = (el) => {
+      let node = el;
+      while (node && node instanceof Element) {
+        if (node.hasAttribute("inert")) return true;
+        if (node.getAttribute("aria-hidden") === "true") return true;
+        node = node.parentElement;
+      }
+      return false;
+    };
+    const isVisible = (el) => {
+      const style = window.getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden") return false;
+      if (Number.parseFloat(style.opacity || "1") <= 0) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    const isButtonLike = (el) => {
+      if (!(el instanceof HTMLElement)) return false;
+      if (el instanceof HTMLButtonElement) return true;
+      if (el instanceof HTMLInputElement) {
+        const type = (el.type || "text").toLowerCase();
+        return type === "button" || type === "submit" || type === "reset";
+      }
+      return el.getAttribute("role")?.toLowerCase() === "button";
+    };
+    const getLabel = (el) => {
+      const ariaLabel = el.getAttribute("aria-label");
+      if (ariaLabel && ariaLabel.trim()) return ariaLabel.trim().slice(0, 120);
+      const text = (el.textContent || "").replace(/\\s+/g, " ").trim();
+      if (text) return text.slice(0, 120);
+      return el.tagName.toLowerCase();
+    };
+
+    const all = [];
+    try {
+      const roots = [document];
+      while (roots.length) {
+        const root = roots.pop();
+        if (!root) continue;
+        root.querySelectorAll("[" + refAttr + "]").forEach((el) => el.removeAttribute(refAttr));
+        const nodes = Array.from(root.querySelectorAll("*") ?? []);
+        for (const el of nodes) {
+          if (el instanceof HTMLElement && isButtonLike(el) && !isInert(el) && isVisible(el)) {
+            all.push(el);
+          }
+          if (el instanceof HTMLElement && el.shadowRoot) {
+            roots.push(el.shadowRoot);
+          }
+        }
+      }
+    } catch {
+      // Detached or minimal iframe documents may reject traversal.
+    }
+
+    return all.map((el, index) => {
+      const ref = "b" + (startCounter + index + 1);
+      el.setAttribute(refAttr, ref);
+      return {
+        ref,
+        role: "button",
+        label: getLabel(el),
+        disabled:
+          el instanceof HTMLInputElement || el instanceof HTMLButtonElement
+            ? el.disabled
+            : el.getAttribute("aria-disabled") === "true",
+      };
+    });
+  }
+`;
+
+async function scanFrameButtons(
+  page: Page,
+  existing: InteractableElement[],
+): Promise<InteractableElement[]> {
+  const found: InteractableElement[] = [];
+  let counter = existing.length;
+
+  for (const frame of page.frames()) {
+    if (frame === page.mainFrame()) continue;
+
+    try {
+      const frameArgs = JSON.stringify({ refAttr: BTN_REF_ATTR, startCounter: counter });
+      const items = ((await frame.evaluate(
+        `(${FRAME_BUTTON_SCRIPT})(${frameArgs})`,
+      )) ?? []) as Array<{
+        ref: string;
+        role: ElementRole;
+        label: string;
+        disabled: boolean;
+      }>;
+
+      for (const item of items) {
+        const locator = frame.locator(`[${BTN_REF_ATTR}="${item.ref}"]`);
+        const box = await locator.boundingBox().catch(() => null);
+        const point = box
+          ? { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+          : undefined;
+
+        if (isButtonDuplicate({ label: item.label, point }, [...existing, ...found])) {
+          await locator.evaluate((el, attr) => el.removeAttribute(attr), BTN_REF_ATTR).catch(() => {});
+          continue;
+        }
+
+        found.push({
+          ref: item.ref,
+          role: "button",
+          label: item.label,
+          disabled: item.disabled,
+          point,
+        });
+        counter += 1;
+      }
+    } catch {
+      // Detached or inaccessible frame.
+    }
+  }
+
+  return found;
+}
+
+function sortButtonsByOrder(elements: InteractableElement[]): InteractableElement[] {
+  return elements.map((el, index) => ({
+    ...el,
+    order: index + 1,
+  }));
+}
+
+export async function scanVisibleButtons(page: Page): Promise<InteractableElement[]> {
+  await clearAllButtonRefs(page);
+
+  let result: { elements: InteractableElement[] } = { elements: [] };
+  try {
+    result = (await page.evaluate(`(${loadScanVisibleButtons()})()`)) as {
+      elements: InteractableElement[];
+    };
+  } catch {
+    // Main-frame walk can fail on captcha / bot-check pages.
+  }
+  if (!Array.isArray(result.elements)) {
+    result.elements = [];
+  }
+
+  const pierced = await scanPiercedButtons(page, result.elements);
+  const framed = await scanFrameButtons(page, [...result.elements, ...pierced]);
+
+  return sortButtonsByOrder([...result.elements, ...pierced, ...framed]);
 }
 
 const FRAME_TABBABLE_SCRIPT = `
@@ -550,17 +809,19 @@ export async function scanInteractables(page: Page): Promise<ScanResult> {
   return result;
 }
 
-export async function findFrameForRef(page: Page, ref: string): Promise<Frame> {
+export async function findFrameForRef(page: Page, ref: string, attr?: string): Promise<Frame> {
+  const refAttr = attr ?? refAttrForRef(ref);
   for (const frame of page.frames()) {
-    const count = await frame.locator(`[${REF_ATTR}="${ref}"]`).count().catch(() => 0);
+    const count = await frame.locator(`[${refAttr}="${ref}"]`).count().catch(() => 0);
     if (count > 0) return frame;
   }
   return page.mainFrame();
 }
 
-export function refLocator(page: Page, ref: string, frame?: Frame) {
+export function refLocator(page: Page, ref: string, frame?: Frame, attr?: string) {
+  const refAttr = attr ?? refAttrForRef(ref);
   const target = frame ?? page;
-  return target.locator(`[${REF_ATTR}="${ref}"]`);
+  return target.locator(`[${refAttr}="${ref}"]`);
 }
 
 export function getElementPoint(elements: InteractableElement[], ref: string) {

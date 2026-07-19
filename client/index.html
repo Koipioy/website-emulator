@@ -10,7 +10,7 @@
     <div id="app">
       <header class="header">
         <h1>Website Emulator</h1>
-        <p class="subtitle">Visible tabbable elements with highlighted page screenshot</p>
+        <p class="subtitle">Visible tabbable elements, buttons, and highlighted page screenshot</p>
         <form id="nav-form" class="nav-form">
           <input
             id="url-input"
@@ -21,6 +21,8 @@
           />
           <button type="submit" id="connect-btn">Connect</button>
           <button type="button" id="refresh-btn" disabled>Refresh</button>
+          <button type="button" id="scroll-up-btn" disabled>Scroll Up</button>
+          <button type="button" id="scroll-down-btn" disabled>Scroll Down</button>
           <button type="button" id="disconnect-btn" disabled>Disconnect</button>
         </form>
         <div id="status" class="status">Disconnected</div>
@@ -29,6 +31,7 @@
         <h2 class="screenshot-heading">Page screenshot</h2>
         <img id="page-screenshot" class="page-screenshot" alt="Highlighted tabbable elements on the live page" />
       </section>
+      <section id="buttons-section" class="buttons-section"></section>
       <main id="elements" class="elements"></main>
     </div>
     <script type="module" src="/main.ts"></script>

@@ -23,10 +23,16 @@ export class BrowserSession {
       headless: process.env.HEADLESS === "1",
       handleSIGINT: false,
       handleSIGTERM: false,
+      args: ["--disable-blink-features=AutomationControlled"],
     }).catch((err) => {
       throw new Error(formatUserError(err));
     });
     const context = await this.browser.newContext();
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, "webdriver", {
+        get: () => false,
+      });
+    });
     this.page = await context.newPage();
 
     if (onNavigate) {

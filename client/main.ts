@@ -10,8 +10,11 @@ const urlInput = document.getElementById("url-input") as HTMLInputElement;
 const navForm = document.getElementById("nav-form") as HTMLFormElement;
 const connectBtn = document.getElementById("connect-btn") as HTMLButtonElement;
 const refreshBtn = document.getElementById("refresh-btn") as HTMLButtonElement;
+const scrollUpBtn = document.getElementById("scroll-up-btn") as HTMLButtonElement;
+const scrollDownBtn = document.getElementById("scroll-down-btn") as HTMLButtonElement;
 const disconnectBtn = document.getElementById("disconnect-btn") as HTMLButtonElement;
 const statusEl = document.getElementById("status") as HTMLDivElement;
+const buttonsSection = document.getElementById("buttons-section") as HTMLElement;
 const elementsEl = document.getElementById("elements") as HTMLElement;
 const screenshotSection = document.getElementById("screenshot-section") as HTMLElement;
 const pageScreenshot = document.getElementById("page-screenshot") as HTMLImageElement;
@@ -22,7 +25,9 @@ let reconnectAttempt = 0;
 let hasConnectedOnce = false;
 let session: SessionState = { connected: false, url: "", title: "" };
 let elements: InteractableElement[] = [];
+let buttons: InteractableElement[] = [];
 let elementsSnapshot = "";
+let buttonsSnapshot = "";
 let lastAction = "";
 
 function send(message: object): void {
@@ -39,6 +44,8 @@ function setStatus(text: string, kind: "info" | "error" | "success" = "info"): v
 function updateControls(): void {
   const connected = session.connected;
   refreshBtn.disabled = !connected;
+  scrollUpBtn.disabled = !connected;
+  scrollDownBtn.disabled = !connected;
   disconnectBtn.disabled = !connected;
   connectBtn.textContent = connected ? "Reconnect" : "Connect";
 }
@@ -52,6 +59,69 @@ function updateScreenshot(screenshot?: string): void {
 
   screenshotSection.classList.add("hidden");
   pageScreenshot.removeAttribute("src");
+}
+
+function renderButtons(): void {
+  buttonsSection.innerHTML = "";
+
+  if (!session.connected) {
+    buttonsSection.classList.add("hidden");
+    return;
+  }
+
+  buttonsSection.classList.remove("hidden");
+
+  const banner = document.createElement("div");
+  banner.className = "list-banner buttons-banner";
+  banner.textContent = `Visible buttons on screen (${buttons.length})`;
+  buttonsSection.appendChild(banner);
+
+  if (buttons.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "No visible buttons on screen.";
+    buttonsSection.appendChild(empty);
+    return;
+  }
+
+  const list = document.createElement("div");
+  list.className = "tab-list";
+
+  for (const btn of buttons) {
+    list.appendChild(renderButtonCard(btn));
+  }
+
+  buttonsSection.appendChild(list);
+}
+
+function renderButtonCard(el: InteractableElement): HTMLElement {
+  const card = document.createElement("article");
+  card.className = "card button-card";
+  if (el.disabled) card.classList.add("disabled");
+
+  const header = document.createElement("div");
+  header.className = "card-header";
+
+  const orderBadge = document.createElement("span");
+  orderBadge.className = "tab-order";
+  orderBadge.textContent = `#${el.order ?? "?"}`;
+
+  const title = document.createElement("div");
+  title.className = "card-title";
+  title.innerHTML = `<span class="ref">${el.ref}</span><span class="label">${escapeHtml(el.label)}</span>`;
+
+  header.append(orderBadge, title);
+  card.appendChild(header);
+
+  const controls = document.createElement("div");
+  controls.className = "card-controls";
+  controls.append(
+    actionButton("Click", () => send({ type: "click", ref: el.ref }), el.disabled),
+    actionButton("Scroll", () => send({ type: "scroll", ref: el.ref }), el.disabled),
+  );
+  card.appendChild(controls);
+
+  return card;
 }
 
 function renderElements(): void {
@@ -146,10 +216,15 @@ function renderElementCard(el: InteractableElement): HTMLElement {
   const controls = document.createElement("div");
   controls.className = "card-controls";
 
+  const scrollBtn = actionButton("Scroll", () => send({ type: "scroll", ref: el.ref }), el.disabled);
+
   switch (el.role) {
     case "button":
     case "link":
-      controls.appendChild(actionButton("Click", () => send({ type: "click", ref: el.ref }), el.disabled));
+      controls.append(
+        actionButton("Click", () => send({ type: "click", ref: el.ref }), el.disabled),
+        scrollBtn,
+      );
       break;
 
     case "textbox": {
@@ -170,7 +245,7 @@ function renderElementCard(el: InteractableElement): HTMLElement {
         }
       });
 
-      controls.append(input, fillBtn);
+      controls.append(input, fillBtn, scrollBtn);
       break;
     }
 
@@ -186,7 +261,7 @@ function renderElementCard(el: InteractableElement): HTMLElement {
         send({ type: "check", ref: el.ref, checked: input.checked });
       });
       toggle.append(input, document.createTextNode(el.checked ? "Checked" : "Unchecked"));
-      controls.appendChild(toggle);
+      controls.append(toggle, scrollBtn);
       break;
     }
 
@@ -203,7 +278,7 @@ function renderElementCard(el: InteractableElement): HTMLElement {
       const selectBtn = actionButton("Select", () => {
         send({ type: "select", ref: el.ref, value: select.value });
       }, el.disabled);
-      controls.append(select, selectBtn);
+      controls.append(select, selectBtn, scrollBtn);
       break;
     }
 
@@ -221,7 +296,7 @@ function renderElementCard(el: InteractableElement): HTMLElement {
         const selectBtn = actionButton("Select", () => {
           send({ type: "select", ref: el.ref, value: select.value });
         }, el.disabled);
-        controls.append(select, selectBtn);
+        controls.append(select, selectBtn, scrollBtn);
       } else {
         const input = document.createElement("input");
         input.type = "text";
@@ -240,13 +315,16 @@ function renderElementCard(el: InteractableElement): HTMLElement {
           }
         });
 
-        controls.append(input, fillBtn);
+        controls.append(input, fillBtn, scrollBtn);
       }
       break;
     }
 
     default:
-      controls.appendChild(actionButton("Click", () => send({ type: "click", ref: el.ref }), el.disabled));
+      controls.append(
+        actionButton("Click", () => send({ type: "click", ref: el.ref }), el.disabled),
+        scrollBtn,
+      );
   }
 
   card.appendChild(controls);
@@ -280,21 +358,26 @@ function handleServerMessage(message: ServerMessage): void {
       if (!session.connected) {
         updateScreenshot();
       }
+      renderButtons();
       renderElements();
       break;
 
     case "elements": {
       const snapshot = JSON.stringify(message.elements);
+      const buttonsSnap = JSON.stringify(message.buttons ?? []);
       const pageChanged = message.url !== session.url || message.title !== session.title;
       elements = message.elements;
+      buttons = message.buttons ?? [];
       session = { ...session, connected: true, url: message.url, title: message.title };
       updateControls();
       updateScreenshot(message.screenshot);
       setStatus(
-        `${message.title || "Untitled"} — ${message.url} — ${message.elements.length} visible tabbable element(s) — auto-sync every 3s${lastAction ? ` — ${lastAction}` : ""}`,
+        `${message.title || "Untitled"} — ${message.url} — ${message.elements.length} tabbable, ${buttons.length} button(s) — auto-sync every 3s${lastAction ? ` — ${lastAction}` : ""}`,
       );
-      if (snapshot !== elementsSnapshot || pageChanged) {
+      if (snapshot !== elementsSnapshot || buttonsSnap !== buttonsSnapshot || pageChanged) {
         elementsSnapshot = snapshot;
+        buttonsSnapshot = buttonsSnap;
+        renderButtons();
         renderElements();
       }
       break;
@@ -375,21 +458,35 @@ navForm.addEventListener("submit", (e) => {
 
 refreshBtn.addEventListener("click", () => {
   send({ type: "refresh" });
-  setStatus("Refreshing visible tabbable list…");
+  setStatus("Refreshing visible elements and buttons…");
+});
+
+scrollUpBtn.addEventListener("click", () => {
+  send({ type: "scroll_page", direction: "up" });
+  setStatus("Scrolling page up…");
+});
+
+scrollDownBtn.addEventListener("click", () => {
+  send({ type: "scroll_page", direction: "down" });
+  setStatus("Scrolling page down…");
 });
 
 disconnectBtn.addEventListener("click", () => {
   send({ type: "disconnect" });
   elements = [];
+  buttons = [];
   elementsSnapshot = "";
+  buttonsSnapshot = "";
   session = { connected: false, url: "", title: "" };
   lastAction = "";
   updateControls();
   updateScreenshot();
+  renderButtons();
   renderElements();
   setStatus("Disconnected");
 });
 
 connectWebSocket();
 updateControls();
+renderButtons();
 renderElements();

@@ -2,7 +2,7 @@ import type { Page } from "playwright";
 import type { InteractableElement, PopupScope } from "../shared/protocol.js";
 import { captureHighlightedScreenshot } from "./screenshot.js";
 import { filterOnScreen } from "./visibility.js";
-import { REF_ATTR, findFrameForRef, refLocator, scanInteractables } from "./scanner.js";
+import { BTN_REF_ATTR, REF_ATTR, findFrameForRef, refAttrForRef, refLocator, scanInteractables, scanVisibleButtons } from "./scanner.js";
 
 export interface ActionResult {
   ref: string;
@@ -28,8 +28,9 @@ function isObscuredError(err: unknown): boolean {
 }
 
 async function clickWithFallback(page: Page, ref: string): Promise<void> {
-  const frame = await findFrameForRef(page, ref);
-  const locator = refLocator(page, ref, frame);
+  const attr = refAttrForRef(ref);
+  const frame = await findFrameForRef(page, ref, attr);
+  const locator = refLocator(page, ref, frame, attr);
 
   try {
     await locator.click({ timeout: ACTION_TIMEOUT });
@@ -60,13 +61,14 @@ async function clickWithFallback(page: Page, ref: string): Promise<void> {
       }
       el.click();
     },
-    { attr: REF_ATTR, refId: ref },
+    { attr: refAttrForRef(ref), refId: ref },
   );
 }
 
 async function locatorForRef(page: Page, ref: string) {
-  const frame = await findFrameForRef(page, ref);
-  return refLocator(page, ref, frame);
+  const attr = refAttrForRef(ref);
+  const frame = await findFrameForRef(page, ref, attr);
+  return refLocator(page, ref, frame, attr);
 }
 
 async function runAction(
@@ -169,8 +171,31 @@ export async function pressElement(page: Page, ref: string, key: string): Promis
   return result;
 }
 
+export async function scrollElement(page: Page, ref: string): Promise<ActionResult> {
+  const locator = await locatorForRef(page, ref);
+  try {
+    await locator.scrollIntoViewIfNeeded({ timeout: ACTION_TIMEOUT });
+    await waitForStability(page);
+    return { ref, success: true };
+  } catch (err) {
+    return { ref, success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export async function scrollPage(page: Page, direction: "up" | "down"): Promise<ActionResult> {
+  try {
+    const delta = direction === "up" ? -500 : 500;
+    await page.mouse.wheel(0, delta);
+    await waitForStability(page);
+    return { ref: "page", success: true };
+  } catch (err) {
+    return { ref: "page", success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export async function scanAndGetPageInfo(page: Page): Promise<{
   elements: InteractableElement[];
+  buttons: InteractableElement[];
   popup: PopupScope | null;
   url: string;
   title: string;
@@ -181,7 +206,11 @@ export async function scanAndGetPageInfo(page: Page): Promise<{
     page.title(),
     page.url(),
   ]);
-  const elements = await filterOnScreen(page, scan.elements);
+  const scannedButtons = await scanVisibleButtons(page);
+  const [elements, buttons] = await Promise.all([
+    filterOnScreen(page, scan.elements, REF_ATTR),
+    filterOnScreen(page, scannedButtons, BTN_REF_ATTR),
+  ]);
   const screenshot = await captureHighlightedScreenshot(page, elements);
-  return { elements, popup: null, url, title, screenshot };
+  return { elements, buttons, popup: null, url, title, screenshot };
 }

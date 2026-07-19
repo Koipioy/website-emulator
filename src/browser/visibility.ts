@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CDPSession, Page } from "playwright";
 import type { InteractableElement } from "../shared/protocol.js";
-import { REF_ATTR, findFrameForRef } from "./scanner.js";
+import { BTN_REF_ATTR, REF_ATTR, findFrameForRef } from "./scanner.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -46,23 +46,30 @@ async function getCdpSession(page: Page): Promise<CDPSession> {
   return client;
 }
 
-function walkCdpRefs(node: CdpDomNode, map: Map<string, number>): void {
+function sortByOrder(elements: InteractableElement[]): InteractableElement[] {
+  return elements.map((el, index) => ({
+    ...el,
+    order: index + 1,
+  }));
+}
+
+function walkCdpRefs(node: CdpDomNode, map: Map<string, number>, attr: string): void {
   const attrs = node.attributes || [];
   for (let i = 0; i < attrs.length; i += 2) {
-    if (attrs[i] === REF_ATTR && attrs[i + 1]) {
+    if (attrs[i] === attr && attrs[i + 1]) {
       map.set(attrs[i + 1]!, node.nodeId);
     }
   }
-  for (const child of node.children || []) walkCdpRefs(child, map);
-  for (const shadow of node.shadowRoots || []) walkCdpRefs(shadow, map);
+  for (const child of node.children || []) walkCdpRefs(child, map, attr);
+  for (const shadow of node.shadowRoots || []) walkCdpRefs(shadow, map, attr);
 }
 
-async function buildCdpRefMap(client: CDPSession): Promise<Map<string, number>> {
+async function buildCdpRefMap(client: CDPSession, attr: string): Promise<Map<string, number>> {
   const { root } = (await client.send("DOM.getDocument", { depth: -1, pierce: true })) as {
     root: CdpDomNode;
   };
   const map = new Map<string, number>();
-  walkCdpRefs(root, map);
+  walkCdpRefs(root, map, attr);
   return map;
 }
 
@@ -149,14 +156,15 @@ async function checkElementOnScreen(
   ref: string,
   cdpClient: CDPSession,
   cdpRefMap: Map<string, number>,
+  attr: string,
 ): Promise<OnScreenResult> {
-  const frame = await findFrameForRef(page, ref);
-  const locator = frame.locator(`[${REF_ATTR}="${ref}"]`);
+  const frame = await findFrameForRef(page, ref, attr);
+  const locator = frame.locator(`[${attr}="${ref}"]`);
   const count = await locator.count().catch(() => 0);
 
   if (count > 0) {
     const onScreenCheck = loadOnScreenCheck();
-    const argsJson = JSON.stringify({ attr: REF_ATTR, refId: ref });
+    const argsJson = JSON.stringify({ attr, refId: ref });
     const frameResult = (await frame
       .evaluate(`(${onScreenCheck})(${argsJson})`)
       .catch(() => ({ visible: false }))) as OnScreenResult;
@@ -186,15 +194,16 @@ async function checkElementOnScreen(
 export async function filterOnScreen(
   page: Page,
   elements: InteractableElement[],
+  attr = REF_ATTR,
 ): Promise<InteractableElement[]> {
   if (elements.length === 0) return [];
 
   const visible: InteractableElement[] = [];
   const cdpClient = await getCdpSession(page);
-  const cdpRefMap = await buildCdpRefMap(cdpClient);
+  const cdpRefMap = await buildCdpRefMap(cdpClient, attr);
 
   for (const el of elements) {
-    const result = await checkElementOnScreen(page, el.ref, cdpClient, cdpRefMap);
+    const result = await checkElementOnScreen(page, el.ref, cdpClient, cdpRefMap, attr);
     if (!result.visible || !result.bounds) continue;
 
     visible.push({
@@ -207,5 +216,5 @@ export async function filterOnScreen(
     });
   }
 
-  return sortByTabOrder(visible);
+  return attr === BTN_REF_ATTR ? sortByOrder(visible) : sortByTabOrder(visible);
 }

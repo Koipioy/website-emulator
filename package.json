@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "DEV=1 tsx src/server.ts",
     "dev:watch": "DEV=1 node --import tsx --watch-path=./src src/server.ts",
-    "build": "vite build && tsc -p tsconfig.json && cp src/browser/scan-in-page.js src/browser/on-screen-check.js dist/browser/",
+    "build": "vite build && tsc -p tsconfig.json && cp src/browser/scan-in-page.js src/browser/on-screen-check.js src/browser/scan-visible-buttons.js dist/browser/",
     "start": "node dist/server.js",
     "verify": "npm run build && node --import tsx scripts/verify.ts",
     "postinstall": "playwright install chromium"
