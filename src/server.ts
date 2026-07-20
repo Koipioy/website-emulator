@@ -19,7 +19,12 @@ import {
   type ActionResult,
 } from "./browser/actions.js";
 import { BrowserSession } from "./browser/session.js";
-import { actionsForElement } from "./shared/element-actions.js";
+import {
+  choicesResponse,
+  isActCommand,
+  type ActCommand,
+  type ChoicesResponse,
+} from "./api/commands.js";
 import {
   type ClientMessage,
   type InteractableElement,
@@ -131,23 +136,6 @@ async function getPageSnapshot(
   return { snapshot: lastSnapshot, cached: false };
 }
 
-function serializeElement(el: InteractableElement) {
-  return {
-    number: el.order,
-    ref: el.ref,
-    role: el.role,
-    label: el.label,
-    value: el.value,
-    checked: el.checked,
-    href: el.href,
-    disabled: el.disabled,
-    inputType: el.inputType,
-    options: el.options,
-    bounds: el.bounds,
-    actions: actionsForElement(el),
-  };
-}
-
 function screenshotDataUrlToBuffer(dataUrl: string): Buffer | null {
   const match = /^data:image\/\w+;base64,(.+)$/.exec(dataUrl);
   if (!match?.[1]) return null;
@@ -156,24 +144,9 @@ function screenshotDataUrlToBuffer(dataUrl: string): Buffer | null {
 
 type ElementActionType = "click" | "fill" | "select" | "check" | "press" | "scroll";
 
-interface ApiActionRequest {
-  ref?: string;
-  id?: string;
-  number?: number;
-  action?: string;
-  value?: string;
-  checked?: boolean;
-  key?: string;
-}
-
-function resolveElementRef(body: ApiActionRequest): string | null {
-  if (typeof body.ref === "string" && body.ref.trim()) return body.ref.trim();
-  if (typeof body.id === "string" && body.id.trim()) return body.id.trim();
-  if (typeof body.number === "number") {
-    const match = [...lastElements, ...lastButtons].find((el) => el.order === body.number);
-    return match?.ref ?? null;
-  }
-  return null;
+function resolveElementRef(element: number): string | null {
+  const match = [...lastElements, ...lastButtons].find((el) => el.order === element);
+  return match?.ref ?? null;
 }
 
 async function performElementAction(
@@ -220,32 +193,93 @@ async function performElementAction(
   }
 }
 
-async function runElementAction(body: ApiActionRequest): Promise<ActionResult> {
+async function executeActCommand(
+  cmd: ActCommand,
+): Promise<{ success: boolean; error?: string; ref?: string }> {
   if (shuttingDown) {
-    return { ref: "", success: false, error: "Server is shutting down" };
+    return { success: false, error: "Server is shutting down" };
   }
 
-  const ref = resolveElementRef(body);
+  if (cmd.action === "navigate") {
+    try {
+      await navigateToUrl(cmd.url);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: formatUserError(err) };
+    }
+  }
+
+  const page = session.getPage();
+  if (!page) {
+    return { success: false, error: "No active browser session" };
+  }
+
+  if (cmd.action === "scroll-up" || cmd.action === "scroll-down") {
+    const result = await scrollPage(page, cmd.action === "scroll-up" ? "up" : "down");
+    return { success: result.success, error: result.error, ref: result.ref };
+  }
+
+  if (!("element" in cmd)) {
+    return { success: false, error: "Unknown command" };
+  }
+
+  const ref = resolveElementRef(cmd.element);
   if (!ref) {
-    return { ref: "", success: false, error: "Element id is required (ref, id, or number)" };
+    return { success: false, error: `Unknown element: ${cmd.element}` };
   }
 
-  if (!body.action || typeof body.action !== "string") {
-    return { ref, success: false, error: "Action is required" };
+  switch (cmd.action) {
+    case "click":
+      return performElementAction(ref, "click", {});
+    case "scroll-into-view":
+      return performElementAction(ref, "scroll", {});
+    case "fill":
+      return performElementAction(ref, "fill", { value: cmd.value });
+    case "select":
+      return performElementAction(ref, "select", { value: cmd.value });
+    case "check":
+      return performElementAction(ref, "check", { checked: cmd.checked });
+    case "press":
+      return performElementAction(ref, "press", { key: cmd.key });
+    default:
+      return { success: false, error: `Unknown action: ${(cmd as ActCommand & { action: string }).action}` };
+  }
+}
+
+interface ActResponse extends ChoicesResponse {
+  success: boolean;
+  error?: string;
+  ref?: string;
+}
+
+async function runAct(body: unknown): Promise<ActResponse> {
+  if (!isActCommand(body)) {
+    return {
+      success: false,
+      error: "Invalid command JSON",
+      ...choicesResponse(lastSnapshot, lastSnapshot !== null),
+    };
   }
 
-  const action = body.action as ElementActionType;
-  const result = await performElementAction(ref, action, {
-    value: body.value,
-    checked: body.checked,
-    key: body.key,
-  });
+  const result = await executeActCommand(body);
+  if (!result.success) {
+    return {
+      success: false,
+      error: result.error,
+      ref: result.ref,
+      ...choicesResponse(lastSnapshot, lastSnapshot !== null),
+    };
+  }
 
-  if (result.success && !shuttingDown) {
+  if (body.action !== "navigate") {
     await pushElements();
   }
 
-  return result;
+  return {
+    success: true,
+    ref: result.ref,
+    ...choicesResponse(lastSnapshot, false),
+  };
 }
 
 function registerApiRoutes(app: express.Express): void {
@@ -280,42 +314,38 @@ function registerApiRoutes(app: express.Express): void {
     }
   });
 
-  app.get("/api/elements", async (req, res) => {
+  app.get("/api/choices", async (req, res) => {
     try {
+      if (!session.getPage()) {
+        res.json(choicesResponse(null));
+        return;
+      }
+
       const result = await getPageSnapshot(wantsRefresh(req));
       if (!result) {
-        res.status(503).json({ error: "No active browser session" });
+        res.json(choicesResponse(null));
         return;
       }
 
       const { snapshot, cached } = result;
-      res.json({
-        url: snapshot.url,
-        title: snapshot.title,
-        elements: snapshot.elements.map(serializeElement),
-        buttons: snapshot.buttons.map(serializeElement),
-        cached,
-      });
+      res.json(choicesResponse(snapshot, cached));
     } catch (err) {
       res.status(500).json({ error: formatUserError(err) });
     }
   });
 
-  app.post("/api/action", async (req, res) => {
+  app.post("/api/act", async (req, res) => {
     try {
-      const result = await runElementAction(req.body as ApiActionRequest);
+      const result = await runAct(req.body);
 
-      if (result.error === "No active browser session") {
+      if (!result.success && result.error === "No active browser session") {
         res.status(503).json(result);
         return;
       }
 
       if (
         !result.success &&
-        (result.error?.includes("required") ||
-          result.error?.includes("Unknown action") ||
-          result.error === "Action is required" ||
-          result.error === "Element id is required (ref, id, or number)")
+        (result.error === "Invalid command JSON" || result.error?.startsWith("Unknown"))
       ) {
         res.status(400).json(result);
         return;
@@ -410,42 +440,51 @@ async function syncOnce(): Promise<void> {
   }
 }
 
-async function handleNavigate(ws: WebSocket, url: string): Promise<void> {
-  if (shuttingDown) return;
+async function navigateToUrl(url: string): Promise<PageSnapshot> {
+  if (shuttingDown) {
+    throw new Error("Server is shutting down");
+  }
 
   let target = url.trim();
   if (!target) {
-    send(ws, { type: "error", message: "URL is required" });
-    return;
+    throw new Error("URL is required");
   }
   if (!/^https?:\/\//i.test(target)) {
     target = `https://${target}`;
   }
 
+  cancelPendingRescan();
+  stopPeriodicSync();
+  await session.navigate(target, scheduleRescan);
+  const page = session.getPage();
+  if (!page) throw new Error("Failed to open page");
+
+  const info = await fetchCurrentPageInfo();
+  if (!info || !lastSnapshot) throw new Error("Failed to scan page");
+
+  broadcast({
+    type: "session",
+    session: { connected: true, url: info.url, title: info.title },
+  });
+  broadcast({
+    type: "elements",
+    elements: info.elements,
+    buttons: info.buttons,
+    url: info.url,
+    title: info.title,
+    popup: info.popup,
+    screenshot: info.screenshot,
+  });
+  startPeriodicSync();
+
+  return lastSnapshot;
+}
+
+async function handleNavigate(ws: WebSocket, url: string): Promise<void> {
+  if (shuttingDown) return;
+
   try {
-    cancelPendingRescan();
-    stopPeriodicSync();
-    await session.navigate(target, scheduleRescan);
-    const page = session.getPage();
-    if (!page) throw new Error("Failed to open page");
-
-    const info = await fetchCurrentPageInfo();
-    if (!info) throw new Error("Failed to scan page");
-
-    broadcast({
-      type: "session",
-      session: { connected: true, url: info.url, title: info.title },
-    });
-    broadcast({
-      type: "elements",
-      elements: info.elements,
-      buttons: info.buttons,
-      url: info.url,
-      title: info.title,
-      popup: info.popup,
-      screenshot: info.screenshot,
-    });
-    startPeriodicSync();
+    await navigateToUrl(url);
   } catch (err) {
     if (shuttingDown) return;
     send(ws, {

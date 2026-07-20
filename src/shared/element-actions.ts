@@ -6,6 +6,12 @@ export interface ElementActionInfo {
   parameters?: string[];
 }
 
+export interface SerializedElement {
+  number?: number;
+  description: string;
+  actions: ElementActionInfo[];
+}
+
 const SCROLL: ElementActionInfo = {
   type: "scroll",
   description: "Scroll the element into view",
@@ -61,4 +67,35 @@ export function actionsForElement(el: InteractableElement): ElementActionInfo[] 
         SCROLL,
       ];
   }
+}
+
+export function elementDescription(el: InteractableElement): string {
+  const role = el.role.charAt(0).toUpperCase() + el.role.slice(1);
+  const parts: string[] = [];
+
+  if (el.label) {
+    parts.push(`${role}: ${el.label}`);
+  } else {
+    parts.push(role);
+  }
+
+  if (el.href) parts.push(el.href);
+  if (el.value) parts.push(`value "${el.value}"`);
+  if (el.checked !== undefined) parts.push(el.checked ? "checked" : "unchecked");
+  if (el.inputType) parts.push(`type ${el.inputType}`);
+  if (el.options?.length) {
+    const optionLabels = el.options.map((opt) => opt.label).join(", ");
+    parts.push(`options: ${optionLabels}`);
+  }
+  if (el.disabled) parts.push("disabled");
+
+  return parts.join(" · ");
+}
+
+export function serializeElementForApi(el: InteractableElement): SerializedElement {
+  return {
+    number: el.order,
+    description: elementDescription(el),
+    actions: actionsForElement(el),
+  };
 }

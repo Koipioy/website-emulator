@@ -99,14 +99,38 @@ async function runTests(): Promise<void> {
     const instructionsRes = await fetch(`${BASE}/instructions`);
     if (!instructionsRes.ok) throw new Error(`GET /instructions failed: ${instructionsRes.status}`);
     const instructionsJson = (await instructionsRes.json()) as { systemPrompt?: string };
-    if (!instructionsJson.systemPrompt?.includes("/api/screenshot")) {
+    if (!instructionsJson.systemPrompt?.includes("/api/choices")) {
       throw new Error("GET /instructions missing API documentation");
     }
     console.log("✓ GET /instructions returned system prompt");
 
-    send(ws, { type: "navigate", url: "https://example.com" });
-    const elementsMsg = await nextMessage(ws, "elements", 45000);
-    if (elementsMsg.type !== "elements") throw new Error("Expected elements message");
+    const noSessionChoicesRes = await fetch(`${BASE}/api/choices`);
+    if (!noSessionChoicesRes.ok) throw new Error(`GET /api/choices failed: ${noSessionChoicesRes.status}`);
+    const noSessionChoices = (await noSessionChoicesRes.json()) as { choices: Array<{ action: string }> };
+    if (!noSessionChoices.choices.some((choice) => choice.action === "navigate")) {
+      throw new Error("GET /api/choices without session should include navigate");
+    }
+    console.log("✓ GET /api/choices without session lists navigate");
+
+    const navigateRes = await fetch(`${BASE}/api/act`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "navigate", url: "https://example.com" }),
+    });
+    if (!navigateRes.ok) throw new Error(`POST /api/act navigate failed: ${navigateRes.status}`);
+    const navigateJson = (await navigateRes.json()) as {
+      success: boolean;
+      url: string;
+      choices: Array<{ action: string; element?: number }>;
+    };
+    if (!navigateJson.success || !navigateJson.url.includes("example.com")) {
+      throw new Error("POST /api/act navigate did not open example.com");
+    }
+    if (navigateJson.choices.length === 0) throw new Error("POST /api/act navigate returned no choices");
+    console.log(`✓ POST /api/act navigate opened example.com — ${navigateJson.choices.length} choice(s)`);
+
+    const elementsMsg = await nextMessage(ws, "elements", 15000);
+    if (elementsMsg.type !== "elements") throw new Error("Expected elements message after navigate");
 
     const links = elementsMsg.elements.filter((e) => e.role === "link");
     if (links.length === 0) throw new Error("Expected at least one visible link on example.com");
@@ -114,21 +138,20 @@ async function runTests(): Promise<void> {
       throw new Error("Expected highlighted screenshot in elements message");
     }
     console.log(
-      `✓ Scanned example.com — ${elementsMsg.elements.length} visible element(s), ${links.length} link(s), screenshot included`,
+      `✓ WebSocket received scan — ${elementsMsg.elements.length} visible element(s), ${links.length} link(s)`,
     );
 
-    const elementsRes = await fetch(`${BASE}/api/elements`);
-    if (!elementsRes.ok) throw new Error(`GET /api/elements failed: ${elementsRes.status}`);
-    const elementsJson = (await elementsRes.json()) as {
+    const choicesRes = await fetch(`${BASE}/api/choices`);
+    if (!choicesRes.ok) throw new Error(`GET /api/choices failed: ${choicesRes.status}`);
+    const choicesJson = (await choicesRes.json()) as {
       url: string;
-      elements: Array<{ number?: number; ref: string; actions: Array<{ type: string }> }>;
+      choices: Array<{ action: string; element?: number }>;
     };
-    if (!elementsJson.url.includes("example.com")) throw new Error("API elements missing page url");
-    if (elementsJson.elements.length === 0) throw new Error("API elements list is empty");
-    if (!elementsJson.elements[0]!.actions.some((action) => action.type === "click")) {
-      throw new Error("API elements missing click action");
+    if (!choicesJson.url.includes("example.com")) throw new Error("API choices missing page url");
+    if (!choicesJson.choices.some((choice) => choice.action === "scroll-down")) {
+      throw new Error("API choices missing scroll-down");
     }
-    console.log(`✓ GET /api/elements returned ${elementsJson.elements.length} element(s)`);
+    console.log(`✓ GET /api/choices returned ${choicesJson.choices.length} command(s)`);
 
     const screenshotRes = await fetch(`${BASE}/api/screenshot`);
     if (!screenshotRes.ok) throw new Error(`GET /api/screenshot failed: ${screenshotRes.status}`);
@@ -142,20 +165,29 @@ async function runTests(): Promise<void> {
     }
     console.log(`✓ GET /api/screenshot returned ${screenshotBytes.byteLength} byte JPEG`);
 
-    const linkRef = links[0]!.ref;
-    const apiClickRes = await fetch(`${BASE}/api/action`, {
+    const clickCommand = choicesJson.choices.find(
+      (choice) => choice.action === "click" && choice.element != null,
+    );
+    if (!clickCommand?.element) throw new Error("API choices missing click command");
+
+    const apiClickRes = await fetch(`${BASE}/api/act`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ref: linkRef, action: "click" }),
+      body: JSON.stringify({ element: clickCommand.element, action: "click" }),
     });
-    if (!apiClickRes.ok) throw new Error(`POST /api/action failed: ${apiClickRes.status}`);
-    const apiClickJson = (await apiClickRes.json()) as { ref: string; success: boolean; error?: string };
+    if (!apiClickRes.ok) throw new Error(`POST /api/act failed: ${apiClickRes.status}`);
+    const apiClickJson = (await apiClickRes.json()) as {
+      success: boolean;
+      choices: unknown[];
+      error?: string;
+    };
     if (!apiClickJson.success) {
-      throw new Error(`POST /api/action click failed: ${apiClickJson.error ?? "unknown"}`);
+      throw new Error(`POST /api/act click failed: ${apiClickJson.error ?? "unknown"}`);
     }
-    console.log("✓ POST /api/action click succeeded");
+    if (apiClickJson.choices.length === 0) throw new Error("POST /api/act did not return refreshed choices");
+    console.log("✓ POST /api/act click succeeded with refreshed choices");
 
-    send(ws, { type: "click", ref: linkRef });
+    send(ws, { type: "click", ref: links[0]!.ref });
     const clickResult = await nextMessage(ws, "action_result", 15000);
     if (clickResult.type !== "action_result" || !clickResult.success) {
       throw new Error(`Click failed: ${clickResult.type === "action_result" ? clickResult.error : "unknown"}`);
@@ -188,11 +220,13 @@ async function runTests(): Promise<void> {
     }
     console.log("✓ Disconnect closed browser session");
 
-    const disconnectedElementsRes = await fetch(`${BASE}/api/elements`);
-    if (disconnectedElementsRes.status !== 503) {
-      throw new Error(`Expected 503 from /api/elements after disconnect, got ${disconnectedElementsRes.status}`);
+    const disconnectedChoicesRes = await fetch(`${BASE}/api/choices`);
+    if (!disconnectedChoicesRes.ok) throw new Error(`GET /api/choices failed after disconnect`);
+    const disconnectedChoices = (await disconnectedChoicesRes.json()) as { choices: unknown[] };
+    if (disconnectedChoices.choices.length === 0) {
+      throw new Error("Expected navigate-only choices after disconnect");
     }
-    console.log("✓ GET /api/elements returns 503 when disconnected");
+    console.log("✓ GET /api/choices returns navigate command when disconnected");
 
     ws.close();
     console.log("\nAll verification checks passed.");

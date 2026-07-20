@@ -1,115 +1,89 @@
 export function buildInstructionsPrompt(baseUrl: string): string {
   return `You control a live browser through the Website Emulator HTTP API at ${baseUrl}.
 
-## Prerequisite
-
-An active browser session is required before any API call will work. Open the Website Emulator web UI, enter a URL, and click Connect. All API endpoints return 503 until a page is loaded.
-
 ## Workflow
 
-1. Get a screenshot to see the page with numbered visible elements.
-2. Get the element list to read labels, refs, and allowed actions.
-3. Execute an action on an element by ref or number.
-4. Repeat from step 1 after actions that change the page.
+1. GET /api/choices to see every command you can run, copied verbatim into POST /api/act.
+2. GET /api/screenshot to see numbered elements on the page.
+3. POST /api/act with one of the choice commands.
+4. Repeat from step 1. /api/act returns refreshed choices after each successful command.
 
-## 1. Screenshot
+## 1. Choices
 
-GET ${baseUrl}/api/screenshot
+GET ${baseUrl}/api/choices
 
-Returns a JPEG image of the current page. Visible tabbable elements are outlined and labeled with their number (#1, #2, …). Use these numbers to match elements in the element list or when calling the action API.
+Lists every valid command for the current page as JSON objects you can POST to /api/act unchanged (except edit values like url, value, or checked).
 
-By default this returns the latest cached scan (same data the web UI shows). Add ?refresh=1 to force a new scan.
-
-- Success: 200, Content-Type image/jpeg
-- No session: 503, JSON { "error": "No active browser session" }
-
-Example:
-curl -o screenshot.jpg ${baseUrl}/api/screenshot
-curl -o screenshot.jpg "${baseUrl}/api/screenshot?refresh=1"
-
-## 2. Elements
-
-GET ${baseUrl}/api/elements
-
-Returns JSON describing the current page and every visible interactable element. By default returns the cached scan; add ?refresh=1 to force a new scan. The response includes "cached": true when served from cache.
-
-Response shape:
+Example response:
 {
   "url": "https://example.com",
   "title": "Example Domain",
-  "elements": [
-    {
-      "number": 1,
-      "ref": "e1",
-      "role": "link",
-      "label": "More information...",
-      "href": "https://www.iana.org/domains/example",
-      "disabled": false,
-      "bounds": { "x": 100, "y": 200, "width": 120, "height": 20 },
-      "actions": [
-        { "type": "click", "description": "Click the element" },
-        { "type": "scroll", "description": "Scroll the element into view" }
-      ]
-    }
-  ],
-  "buttons": []
+  "cached": true,
+  "choices": [
+    { "action": "scroll-up" },
+    { "action": "scroll-down" },
+    { "action": "navigate", "url": "https://example.com" },
+    { "element": 1, "action": "click" },
+    { "element": 1, "action": "scroll-into-view" }
+  ]
 }
 
-- elements: visible tabbable controls in tab order (numbered in the screenshot)
-- buttons: visible on-screen buttons (separate list, also numbered)
-- Each item includes an actions array listing what you may do; only use actions listed there
-- Identify elements by ref, id (alias for ref), or number (matches screenshot labels)
+With no active session, choices only includes navigate:
+{ "action": "navigate", "url": "https://example.com" }
 
-- Success: 200, Content-Type application/json
-- No session: 503, JSON { "error": "No active browser session" }
+Add ?refresh=1 to force a new scan before listing choices.
 
 Example:
-curl ${baseUrl}/api/elements
+curl ${baseUrl}/api/choices
 
-## 3. Action
+## 2. Screenshot
 
-POST ${baseUrl}/api/action
+GET ${baseUrl}/api/screenshot
+
+Returns a JPEG with visible tabbable elements outlined and numbered (#1, #2, …). Match element numbers to commands in /api/choices.
+
+By default returns the cached screenshot. Add ?refresh=1 to force a new capture.
+
+Example:
+curl -o screenshot.jpg ${baseUrl}/api/screenshot
+
+## 3. Act
+
+POST ${baseUrl}/api/act
 Content-Type: application/json
 
-Execute an action on an element. On success the page is rescanned automatically.
+Execute one command from /api/choices. On success, the page is rescanned and the response includes updated choices.
 
-Request body:
-{
-  "ref": "e1",
-  "action": "click"
-}
+Page commands:
+{ "action": "scroll-up" }
+{ "action": "scroll-down" }
+{ "action": "navigate", "url": "https://google.com" }
 
-You may identify the element with any one of:
-- ref: element reference from /api/elements
-- id: alias for ref
-- number: screenshot label (#1, #2, …)
-
-Supported actions:
-- click — no extra fields
-- fill — requires value (string)
-- select — requires value (string, option value)
-- check — requires checked (boolean)
-- press — requires key (string, e.g. "Enter")
-- scroll — scroll element into view
-
-Examples:
-curl -X POST ${baseUrl}/api/action -H "Content-Type: application/json" -d '{"number": 1, "action": "click"}'
-curl -X POST ${baseUrl}/api/action -H "Content-Type: application/json" -d '{"ref": "e3", "action": "fill", "value": "hello"}'
-curl -X POST ${baseUrl}/api/action -H "Content-Type: application/json" -d '{"ref": "e4", "action": "check", "checked": true}'
+Element commands (element matches screenshot number):
+{ "element": 1, "action": "click" }
+{ "element": 2, "action": "fill", "value": "hello" }
+{ "element": 3, "action": "select", "value": "option-value" }
+{ "element": 4, "action": "check", "checked": true }
+{ "element": 5, "action": "press", "key": "Enter" }
+{ "element": 6, "action": "scroll-into-view" }
 
 Response:
-{ "ref": "e1", "success": true }
-{ "ref": "e1", "success": false, "error": "..." }
+{
+  "success": true,
+  "url": "https://example.com",
+  "title": "Example Domain",
+  "choices": [ ... ]
+}
 
-Status codes:
-- 200 — action completed (check success field)
-- 400 — invalid request (missing ref/number, unknown action, missing parameters)
-- 503 — no active browser session
+Examples:
+curl -X POST ${baseUrl}/api/act -H "Content-Type: application/json" -d '{"action":"navigate","url":"https://example.com"}'
+curl -X POST ${baseUrl}/api/act -H "Content-Type: application/json" -d '{"element":1,"action":"click"}'
+curl -X POST ${baseUrl}/api/act -H "Content-Type: application/json" -d '{"action":"scroll-down"}'
 
 ## Tips
 
-- Prefer number when matching screenshot labels; prefer ref when you already fetched /api/elements.
-- /api/screenshot and /api/elements are instant when served from cache. POST /api/action refreshes the cache after a successful action. Use ?refresh=1 when you need a guaranteed fresh scan.
-- Disabled elements only support scroll.
+- Start with { "action": "navigate", "url": "..." } — no web UI required.
+- Only POST commands that appear in /api/choices.
+- /api/act refreshes choices after success; use GET /api/screenshot to see the updated page image.
 - The server binds to localhost only; do not expose it to the network.`;
 }
