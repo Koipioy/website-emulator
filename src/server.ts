@@ -129,8 +129,8 @@ function screenshotDataUrlToBuffer(dataUrl: string): Buffer | null {
 
 type ElementActionType = "click" | "fill" | "select" | "check" | "press" | "scroll";
 
-function resolveElementRef(element: number): string | null {
-  const match = [...lastElements, ...lastButtons].find((el) => el.order === element);
+function resolveElementRef(id: number): string | null {
+  const match = [...lastElements, ...lastButtons].find((el) => el.order === id);
   return match?.ref ?? null;
 }
 
@@ -204,13 +204,13 @@ async function executeActCommand(
     return { success: result.success, error: result.error, ref: result.ref };
   }
 
-  if (!("element" in cmd)) {
+  if (!("id" in cmd)) {
     return { success: false, error: "Unknown command" };
   }
 
-  const ref = resolveElementRef(cmd.element);
+  const ref = resolveElementRef(cmd.id);
   if (!ref) {
-    return { success: false, error: `Unknown element: ${cmd.element}` };
+    return { success: false, error: `Unknown element: ${cmd.id}` };
   }
 
   switch (cmd.action) {

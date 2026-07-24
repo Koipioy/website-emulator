@@ -9,12 +9,12 @@ export type ActCommand =
   | { action: "scroll-up" }
   | { action: "scroll-down" }
   | { action: "navigate"; url: string }
-  | { element: number; action: "click" }
-  | { element: number; action: "fill"; value: string }
-  | { element: number; action: "select"; value: string }
-  | { element: number; action: "check"; checked: boolean }
-  | { element: number; action: "press"; key: string }
-  | { element: number; action: "scroll-into-view" };
+  | { id: number; action: "click" }
+  | { id: number; action: "fill"; value: string }
+  | { id: number; action: "select"; value: string }
+  | { id: number; action: "check"; checked: boolean }
+  | { id: number; action: "press"; key: string }
+  | { id: number; action: "scroll-into-view" };
 
 export interface PageSnapshotLike {
   url: string;
@@ -48,38 +48,38 @@ const NO_SESSION_CHOICES: ActCommand[] = [{ action: "navigate", url: "https://ex
 function choicesForElement(el: InteractableElement): ActCommand[] {
   if (el.order == null) return [];
 
-  const element = el.order;
+  const id = el.order;
   const choices: ActCommand[] = [];
   const actions = actionsForElement(el);
 
   for (const act of actions) {
     switch (act.type) {
       case "click":
-        choices.push({ element, action: "click" });
+        choices.push({ id, action: "click" });
         break;
       case "scroll":
-        choices.push({ element, action: "scroll-into-view" });
+        choices.push({ id, action: "scroll-into-view" });
         break;
       case "fill":
-        choices.push({ element, action: "fill", value: el.value ?? "" });
+        choices.push({ id, action: "fill", value: el.value ?? "" });
         break;
       case "select":
         if (el.options?.length) {
           for (const opt of el.options) {
-            choices.push({ element, action: "select", value: opt.value });
+            choices.push({ id, action: "select", value: opt.value });
           }
         } else {
-          choices.push({ element, action: "select", value: el.value ?? "" });
+          choices.push({ id, action: "select", value: el.value ?? "" });
         }
         break;
       case "check":
-        choices.push({ element, action: "check", checked: true });
+        choices.push({ id, action: "check", checked: true });
         if (el.role !== "radio") {
-          choices.push({ element, action: "check", checked: false });
+          choices.push({ id, action: "check", checked: false });
         }
         break;
       case "press":
-        choices.push({ element, action: "press", key: "Enter" });
+        choices.push({ id, action: "press", key: "Enter" });
         break;
     }
   }
@@ -130,7 +130,7 @@ export function isActCommand(value: unknown): value is ActCommand {
   const cmd = value as ActCommand;
   if (cmd.action === "scroll-up" || cmd.action === "scroll-down") return true;
   if (cmd.action === "navigate") return typeof cmd.url === "string";
-  if ("element" in cmd && typeof cmd.element === "number") {
+  if ("id" in cmd && typeof cmd.id === "number") {
     switch (cmd.action) {
       case "click":
       case "scroll-into-view":

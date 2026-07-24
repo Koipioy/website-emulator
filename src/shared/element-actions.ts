@@ -7,7 +7,7 @@ export interface ElementActionInfo {
 }
 
 export interface SerializedElement {
-  number?: number;
+  id?: number;
   description: string;
   actions: ElementActionInfo[];
 }
@@ -94,7 +94,7 @@ export function elementDescription(el: InteractableElement): string {
 
 export function serializeElementForApi(el: InteractableElement): SerializedElement {
   return {
-    number: el.order,
+    id: el.order,
     description: elementDescription(el),
     actions: actionsForElement(el),
   };

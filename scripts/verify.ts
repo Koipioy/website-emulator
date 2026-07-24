@@ -128,7 +128,7 @@ async function runTests(): Promise<void> {
     const navigateJson = (await navigateRes.json()) as {
       success: boolean;
       url: string;
-      choices: Array<{ action: string; element?: number }>;
+      choices: Array<{ action: string; id?: number }>;
     };
     if (!navigateJson.success || !navigateJson.url.includes("example.com")) {
       throw new Error("POST /api/act navigate did not open example.com");
@@ -150,9 +150,9 @@ async function runTests(): Promise<void> {
       url: string;
       title: string;
       screenshot?: string;
-      elements: Array<{ number?: number; description: string; actions: unknown[] }>;
+      elements: Array<{ id?: number; description: string; actions: unknown[] }>;
       buttons: unknown[];
-      choices: Array<{ action: string; element?: number }>;
+      choices: Array<{ action: string; id?: number }>;
       cached: boolean;
     };
     if (!stateJson.url.includes("example.com")) throw new Error("API state missing page url");
@@ -160,8 +160,8 @@ async function runTests(): Promise<void> {
       throw new Error("API state missing screenshot data URL");
     }
     if (stateJson.elements.length === 0) throw new Error("API state returned no elements");
-    if (!stateJson.elements.some((el) => el.number != null && el.description && el.actions.length > 0)) {
-      throw new Error("API state elements missing number/description/actions");
+    if (!stateJson.elements.some((el) => el.id != null && el.description && el.actions.length > 0)) {
+      throw new Error("API state elements missing id/description/actions");
     }
     if (stateJson.cached !== false) throw new Error("API state should always rescan (cached=false)");
     if (stateJson.choices.length === 0) throw new Error("API state returned no choices");
@@ -184,7 +184,7 @@ async function runTests(): Promise<void> {
     if (!choicesRes.ok) throw new Error(`GET /api/choices failed: ${choicesRes.status}`);
     const choicesJson = (await choicesRes.json()) as {
       url: string;
-      choices: Array<{ action: string; element?: number }>;
+      choices: Array<{ action: string; id?: number }>;
     };
     if (!choicesJson.url.includes("example.com")) throw new Error("API choices missing page url");
     if (!choicesJson.choices.some((choice) => choice.action === "scroll-down")) {
@@ -205,14 +205,14 @@ async function runTests(): Promise<void> {
     console.log(`✓ GET /api/screenshot returned ${screenshotBytes.byteLength} byte JPEG`);
 
     const clickCommand = choicesJson.choices.find(
-      (choice) => choice.action === "click" && choice.element != null,
+      (choice) => choice.action === "click" && choice.id != null,
     );
-    if (!clickCommand?.element) throw new Error("API choices missing click command");
+    if (!clickCommand?.id) throw new Error("API choices missing click command");
 
     const apiClickRes = await fetch(`${BASE}/api/act`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ element: clickCommand.element, action: "click" }),
+      body: JSON.stringify({ id: clickCommand.id, action: "click" }),
     });
     if (!apiClickRes.ok) throw new Error(`POST /api/act failed: ${apiClickRes.status}`);
     const apiClickJson = (await apiClickRes.json()) as {

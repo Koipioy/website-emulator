@@ -17,7 +17,7 @@ GET ${baseUrl}/api/state
 Rescans the live page. Returns JSON with:
 - url, title
 - screenshot — data:image/jpeg;base64,... with numbered outlines (#1, #2, …)
-- elements / buttons — interactables with number, description, and available actions
+- elements / buttons — interactables with id, description, and available actions
 - choices — commands you can POST to /api/act unchanged (except edit values like url, value, or checked)
 - cached — always false for this endpoint
 
@@ -28,7 +28,7 @@ Example response:
   "screenshot": "data:image/jpeg;base64,...",
   "elements": [
     {
-      "number": 1,
+      "id": 1,
       "description": "Link: More information... · https://www.iana.org/domains/example",
       "actions": [
         { "type": "click", "description": "Click the element" },
@@ -42,8 +42,8 @@ Example response:
     { "action": "scroll-up" },
     { "action": "scroll-down" },
     { "action": "navigate", "url": "https://example.com" },
-    { "element": 1, "action": "click" },
-    { "element": 1, "action": "scroll-into-view" }
+    { "id": 1, "action": "click" },
+    { "id": 1, "action": "scroll-into-view" }
   ],
   "cached": false
 }
@@ -86,13 +86,13 @@ Page commands:
 { "action": "scroll-down" }
 { "action": "navigate", "url": "https://google.com" }
 
-Element commands (element matches screenshot number):
-{ "element": 1, "action": "click" }
-{ "element": 2, "action": "fill", "value": "hello" }
-{ "element": 3, "action": "select", "value": "option-value" }
-{ "element": 4, "action": "check", "checked": true }
-{ "element": 5, "action": "press", "key": "Enter" }
-{ "element": 6, "action": "scroll-into-view" }
+Element commands (id matches screenshot number):
+{ "id": 1, "action": "click" }
+{ "id": 2, "action": "fill", "value": "hello" }
+{ "id": 3, "action": "select", "value": "option-value" }
+{ "id": 4, "action": "check", "checked": true }
+{ "id": 5, "action": "press", "key": "Enter" }
+{ "id": 6, "action": "scroll-into-view" }
 
 Response:
 {
@@ -104,7 +104,7 @@ Response:
 
 Examples:
 curl -X POST ${baseUrl}/api/act -H "Content-Type: application/json" -d '{"action":"navigate","url":"https://example.com"}'
-curl -X POST ${baseUrl}/api/act -H "Content-Type: application/json" -d '{"element":1,"action":"click"}'
+curl -X POST ${baseUrl}/api/act -H "Content-Type: application/json" -d '{"id":1,"action":"click"}'
 curl -X POST ${baseUrl}/api/act -H "Content-Type: application/json" -d '{"action":"scroll-down"}'
 
 ## Tips
