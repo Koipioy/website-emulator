@@ -147,7 +147,8 @@ button:disabled {
   font-weight: 600;
 }
 
-.page-screenshot {
+.page-screenshot,
+.screenshot-path {
   display: block;
   width: 100%;
   max-height: 480px;
@@ -155,6 +156,16 @@ button:disabled {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface);
+}
+
+.screenshot-path {
+  padding: 0.75rem 1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  word-break: break-all;
+  white-space: pre-wrap;
+  max-height: none;
 }
 
 .empty {

@@ -18,7 +18,7 @@ const statusEl = document.getElementById("status") as HTMLDivElement;
 const buttonsSection = document.getElementById("buttons-section") as HTMLElement;
 const elementsEl = document.getElementById("elements") as HTMLElement;
 const screenshotSection = document.getElementById("screenshot-section") as HTMLElement;
-const pageScreenshot = document.getElementById("page-screenshot") as HTMLImageElement;
+const screenshotPath = document.getElementById("screenshot-path") as HTMLElement;
 
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -55,12 +55,12 @@ function updateControls(): void {
 function updateScreenshot(screenshot?: string): void {
   if (session.connected && screenshot) {
     screenshotSection.classList.remove("hidden");
-    pageScreenshot.src = screenshot;
+    screenshotPath.textContent = screenshot;
     return;
   }
 
   screenshotSection.classList.add("hidden");
-  pageScreenshot.removeAttribute("src");
+  screenshotPath.textContent = "";
 }
 
 function renderButtons(): void {

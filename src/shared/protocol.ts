@@ -124,7 +124,7 @@ export interface ElementsServerMessage {
   url: string;
   title: string;
   popup?: PopupScope | null;
-  screenshot?: string;
+  screenshot?: string; // absolute filesystem path to saved JPEG
 }
 
 export interface ActionResultServerMessage {

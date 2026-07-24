@@ -70,15 +70,6 @@ function buildHighlightSvg(
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${shapes}</svg>`;
 }
 
-export async function captureHighlightedScreenshot(
-  page: Page,
-  elements: InteractableElement[],
-): Promise<string | undefined> {
-  const buffer = await captureHighlightedScreenshotBuffer(page, elements);
-  if (!buffer) return undefined;
-  return `data:image/jpeg;base64,${buffer.toString("base64")}`;
-}
-
 export async function captureHighlightedScreenshotBuffer(
   page: Page,
   elements: InteractableElement[],

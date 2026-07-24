@@ -59,7 +59,7 @@ interface PageSnapshot {
   title: string;
   elements: InteractableElement[];
   buttons: InteractableElement[];
-  screenshot?: string;
+  screenshot?: string; // absolute filesystem path to saved JPEG
   popup: PopupScope | null;
 }
 
@@ -119,12 +119,6 @@ async function getPageSnapshot(
   const info = await fetchCurrentPageInfo();
   if (!info || !lastSnapshot) return null;
   return { snapshot: lastSnapshot, cached: false };
-}
-
-function screenshotDataUrlToBuffer(dataUrl: string): Buffer | null {
-  const match = /^data:image\/\w+;base64,(.+)$/.exec(dataUrl);
-  if (!match?.[1]) return null;
-  return Buffer.from(match[1], "base64");
 }
 
 type ElementActionType = "click" | "fill" | "select" | "check" | "press" | "scroll";
@@ -281,17 +275,13 @@ function registerApiRoutes(app: express.Express): void {
         return;
       }
 
-      const image = result.snapshot.screenshot
-        ? screenshotDataUrlToBuffer(result.snapshot.screenshot)
-        : null;
-      if (!image) {
-        res.status(500).json({ error: "Failed to capture screenshot" });
+      if (!result.snapshot.screenshot) {
+        res.status(500).json({ error: "No screenshot available" });
         return;
       }
 
-      res.setHeader("Content-Type", "image/jpeg");
       res.setHeader("Cache-Control", "no-store");
-      res.send(image);
+      res.json({ screenshot: result.snapshot.screenshot });
     } catch (err) {
       res.status(500).json({ error: formatUserError(err) });
     }
@@ -300,14 +290,16 @@ function registerApiRoutes(app: express.Express): void {
   app.get("/api/state", async (_req, res) => {
     try {
       if (!session.getPage()) {
-        res.status(503).json({ error: "No active browser session" });
+        res.setHeader("Cache-Control", "no-store");
+        res.json(stateResponse(null, false));
         return;
       }
 
       // Only HTTP path that rescans the page.
       await pushElements();
       if (!lastSnapshot) {
-        res.status(503).json({ error: "No active browser session" });
+        res.setHeader("Cache-Control", "no-store");
+        res.json(stateResponse(null, false));
         return;
       }
 
@@ -360,6 +352,22 @@ function registerApiRoutes(app: express.Express): void {
     } catch (err) {
       res.status(500).json({ error: formatUserError(err) });
     }
+  });
+
+  app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (
+      err instanceof SyntaxError &&
+      typeof err === "object" &&
+      err !== null &&
+      "status" in err &&
+      (err as { status?: number }).status === 400
+    ) {
+      res.status(400).json({
+        error: "Invalid JSON body. POST a single choice object, e.g. {\"action\":\"navigate\",\"url\":\"https://example.com\"}",
+      });
+      return;
+    }
+    next(err);
   });
 }
 

@@ -21,7 +21,7 @@ export interface PageSnapshotLike {
   title: string;
   elements: InteractableElement[];
   buttons: InteractableElement[];
-  screenshot?: string;
+  screenshot?: string; // absolute filesystem path to saved JPEG
   popup?: PopupScope | null;
 }
 
@@ -37,7 +37,7 @@ export interface StateResponse {
   title: string;
   elements: SerializedElement[];
   buttons: SerializedElement[];
-  screenshot?: string;
+  screenshot?: string; // absolute filesystem path to saved JPEG
   popup: PopupScope | null;
   choices: ActCommand[];
   cached: boolean;

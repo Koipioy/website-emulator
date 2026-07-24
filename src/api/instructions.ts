@@ -4,19 +4,25 @@ export function buildInstructionsPrompt(baseUrl: string): string {
 ## Workflow
 
 1. POST /api/act with { "action": "navigate", "url": "..." } to open a page (does not scan).
-2. GET /api/state to scan: highlighted screenshot + interactable elements + choices.
-3. POST /api/act with one of the choice commands.
-4. GET /api/state again whenever you need an updated screenshot and element list.
+2. GET /api/state to scan: interactable elements + choices + screenshot path.
+3. Read the screenshot JPEG from the returned absolute path on disk.
+4. POST /api/act with one of the choice commands.
+5. GET /api/state again whenever you need an updated screenshot and element list.
 
 The page is never auto-scanned. Only GET /api/state rescans.
+
+Screenshots are saved locally as JPEG files. By default: ~/.website-emulator/screenshots/latest.jpg
+Override with SCREENSHOT_DIR env var.
 
 ## 1. State
 
 GET ${baseUrl}/api/state
 
-Rescans the live page. Returns JSON with:
+Rescans the live page when a browser session is open. With no session, returns idle state and available choices (navigate only).
+
+Returns JSON with:
 - url, title
-- screenshot — data:image/jpeg;base64,... with numbered outlines (#1, #2, …)
+- screenshot — absolute filesystem path to a JPEG with numbered outlines (#1, #2, …)
 - elements / buttons — interactables with id, description, and available actions
 - choices — commands you can POST to /api/act unchanged (except edit values like url, value, or checked)
 - cached — always false for this endpoint
@@ -25,7 +31,7 @@ Example response:
 {
   "url": "https://example.com",
   "title": "Example Domain",
-  "screenshot": "data:image/jpeg;base64,...",
+  "screenshot": "/home/user/.website-emulator/screenshots/latest.jpg",
   "elements": [
     {
       "id": 1,
@@ -48,7 +54,7 @@ Example response:
   "cached": false
 }
 
-Without an active session this returns HTTP 503.
+Without an active session this returns empty elements/buttons and a navigate choice only.
 
 Example:
 curl ${baseUrl}/api/state
@@ -69,17 +75,22 @@ curl ${baseUrl}/api/choices
 
 GET ${baseUrl}/api/screenshot
 
-Returns the last scanned JPEG. Call GET /api/state first to capture a new one.
+Returns the last scanned screenshot path without rescanning. Call GET /api/state first to capture a new one.
+
+Example response:
+{ "screenshot": "/home/user/.website-emulator/screenshots/latest.jpg" }
 
 Example:
-curl -o screenshot.jpg ${baseUrl}/api/screenshot
+curl ${baseUrl}/api/screenshot
 
 ## 4. Act
 
 POST ${baseUrl}/api/act
 Content-Type: application/json
 
-Execute one command from /api/state. Does not rescan — call GET /api/state afterward for an updated screenshot and choices.
+Execute one command from /api/state. Does not rescan — call GET /api/state afterward for an updated screenshot path and choices.
+
+POST a single object from the choices array — not the full /api/state response, and not a JSON-encoded string.
 
 Page commands:
 { "action": "scroll-up" }
@@ -110,6 +121,7 @@ curl -X POST ${baseUrl}/api/act -H "Content-Type: application/json" -d '{"action
 ## Tips
 
 - Start with navigate, then always GET /api/state before acting on elements.
+- Read the screenshot file from disk using the absolute path in the response.
 - Only POST commands that appear in the latest /api/state response.
 - /api/act and /api/choices do not refresh the page scan.
 - The server binds to localhost only; do not expose it to the network.`;

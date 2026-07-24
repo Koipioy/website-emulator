@@ -3,6 +3,8 @@
  * Run: node --import tsx scripts/verify.ts
  */
 import { spawn, type ChildProcess } from "node:child_process";
+import { access } from "node:fs/promises";
+import path from "node:path";
 import WebSocket from "ws";
 import type { ServerMessage } from "../src/shared/protocol.js";
 
@@ -113,10 +115,18 @@ async function runTests(): Promise<void> {
     console.log("✓ GET /api/choices without session lists navigate");
 
     const noSessionStateRes = await fetch(`${BASE}/api/state`);
-    if (noSessionStateRes.status !== 503) {
-      throw new Error(`GET /api/state without session expected 503, got ${noSessionStateRes.status}`);
+    if (!noSessionStateRes.ok) throw new Error(`GET /api/state failed: ${noSessionStateRes.status}`);
+    const noSessionState = (await noSessionStateRes.json()) as {
+      elements: unknown[];
+      choices: Array<{ action: string }>;
+    };
+    if (noSessionState.elements.length !== 0) {
+      throw new Error("GET /api/state without session should return no elements");
     }
-    console.log("✓ GET /api/state without session returns 503");
+    if (!noSessionState.choices.some((choice) => choice.action === "navigate")) {
+      throw new Error("GET /api/state without session should include navigate");
+    }
+    console.log("✓ GET /api/state without session returns navigate choice");
 
     const emptyNavPromise = nextMessage(ws, "elements", 15000);
     const navigateRes = await fetch(`${BASE}/api/act`, {
@@ -156,9 +166,10 @@ async function runTests(): Promise<void> {
       cached: boolean;
     };
     if (!stateJson.url.includes("example.com")) throw new Error("API state missing page url");
-    if (!stateJson.screenshot?.startsWith("data:image/jpeg")) {
-      throw new Error("API state missing screenshot data URL");
+    if (!stateJson.screenshot || !path.isAbsolute(stateJson.screenshot)) {
+      throw new Error("API state missing absolute screenshot path");
     }
+    await access(stateJson.screenshot);
     if (stateJson.elements.length === 0) throw new Error("API state returned no elements");
     if (!stateJson.elements.some((el) => el.id != null && el.description && el.actions.length > 0)) {
       throw new Error("API state elements missing id/description/actions");
@@ -173,9 +184,10 @@ async function runTests(): Promise<void> {
     if (elementsMsg.type !== "elements") throw new Error("Expected elements broadcast from /api/state");
     const links = elementsMsg.elements.filter((e) => e.role === "link");
     if (links.length === 0) throw new Error("Expected at least one visible link on example.com");
-    if (!elementsMsg.screenshot?.startsWith("data:image/jpeg")) {
-      throw new Error("Expected highlighted screenshot in elements message");
+    if (!elementsMsg.screenshot || !path.isAbsolute(elementsMsg.screenshot)) {
+      throw new Error("Expected absolute screenshot path in elements message");
     }
+    await access(elementsMsg.screenshot);
     console.log(
       `✓ WebSocket received scan from /api/state — ${elementsMsg.elements.length} visible element(s), ${links.length} link(s)`,
     );
@@ -195,14 +207,15 @@ async function runTests(): Promise<void> {
     const screenshotRes = await fetch(`${BASE}/api/screenshot`);
     if (!screenshotRes.ok) throw new Error(`GET /api/screenshot failed: ${screenshotRes.status}`);
     const contentType = screenshotRes.headers.get("content-type");
-    if (!contentType?.includes("image/jpeg")) {
-      throw new Error(`Expected image/jpeg from /api/screenshot, got ${contentType}`);
+    if (!contentType?.includes("application/json")) {
+      throw new Error(`Expected application/json from /api/screenshot, got ${contentType}`);
     }
-    const screenshotBytes = await screenshotRes.arrayBuffer();
-    if (screenshotBytes.byteLength < 1000) {
-      throw new Error("Screenshot response too small");
+    const screenshotJson = (await screenshotRes.json()) as { screenshot?: string };
+    if (!screenshotJson.screenshot || !path.isAbsolute(screenshotJson.screenshot)) {
+      throw new Error("GET /api/screenshot missing absolute screenshot path");
     }
-    console.log(`✓ GET /api/screenshot returned ${screenshotBytes.byteLength} byte JPEG`);
+    await access(screenshotJson.screenshot);
+    console.log(`✓ GET /api/screenshot returned path ${screenshotJson.screenshot}`);
 
     const clickCommand = choicesJson.choices.find(
       (choice) => choice.action === "click" && choice.id != null,

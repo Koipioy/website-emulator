@@ -1,6 +1,7 @@
 import type { Page } from "playwright";
 import type { InteractableElement, PopupScope } from "../shared/protocol.js";
-import { captureHighlightedScreenshot } from "./screenshot.js";
+import { captureHighlightedScreenshotBuffer } from "./screenshot.js";
+import { saveScreenshot } from "./screenshot-storage.js";
 import { filterOnScreen } from "./visibility.js";
 import { BTN_REF_ATTR, REF_ATTR, findFrameForRef, refAttrForRef, refLocator, scanInteractables, scanVisibleButtons } from "./scanner.js";
 
@@ -199,7 +200,7 @@ export async function scanAndGetPageInfo(page: Page): Promise<{
   popup: PopupScope | null;
   url: string;
   title: string;
-  screenshot?: string;
+  screenshot?: string; // absolute filesystem path to saved JPEG
 }> {
   const [scan, title, url] = await Promise.all([
     scanInteractables(page),
@@ -211,6 +212,7 @@ export async function scanAndGetPageInfo(page: Page): Promise<{
     filterOnScreen(page, scan.elements, REF_ATTR),
     filterOnScreen(page, scannedButtons, BTN_REF_ATTR),
   ]);
-  const screenshot = await captureHighlightedScreenshot(page, elements);
+  const buffer = await captureHighlightedScreenshotBuffer(page, elements);
+  const screenshot = buffer ? await saveScreenshot(buffer) : undefined;
   return { elements, buttons, popup: null, url, title, screenshot };
 }
