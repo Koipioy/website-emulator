@@ -1,5 +1,9 @@
-import type { InteractableElement } from "../shared/protocol.js";
-import { actionsForElement } from "../shared/element-actions.js";
+import type { InteractableElement, PopupScope } from "../shared/protocol.js";
+import {
+  actionsForElement,
+  serializeElementForApi,
+  type SerializedElement,
+} from "../shared/element-actions.js";
 
 export type ActCommand =
   | { action: "scroll-up" }
@@ -17,6 +21,8 @@ export interface PageSnapshotLike {
   title: string;
   elements: InteractableElement[];
   buttons: InteractableElement[];
+  screenshot?: string;
+  popup?: PopupScope | null;
 }
 
 export interface ChoicesResponse {
@@ -24,6 +30,17 @@ export interface ChoicesResponse {
   title: string;
   choices: ActCommand[];
   cached?: boolean;
+}
+
+export interface StateResponse {
+  url: string;
+  title: string;
+  elements: SerializedElement[];
+  buttons: SerializedElement[];
+  screenshot?: string;
+  popup: PopupScope | null;
+  choices: ActCommand[];
+  cached: boolean;
 }
 
 const NO_SESSION_CHOICES: ActCommand[] = [{ action: "navigate", url: "https://example.com" }];
@@ -92,6 +109,19 @@ export function choicesResponse(snapshot: PageSnapshotLike | null, cached?: bool
     title: snapshot?.title ?? "",
     choices: buildChoices(snapshot),
     ...(cached !== undefined ? { cached } : {}),
+  };
+}
+
+export function stateResponse(snapshot: PageSnapshotLike | null, cached: boolean): StateResponse {
+  return {
+    url: snapshot?.url ?? "",
+    title: snapshot?.title ?? "",
+    elements: (snapshot?.elements ?? []).map(serializeElementForApi),
+    buttons: (snapshot?.buttons ?? []).map(serializeElementForApi),
+    ...(snapshot?.screenshot ? { screenshot: snapshot.screenshot } : {}),
+    popup: snapshot?.popup ?? null,
+    choices: buildChoices(snapshot),
+    cached,
   };
 }
 

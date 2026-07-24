@@ -3,56 +3,83 @@ export function buildInstructionsPrompt(baseUrl: string): string {
 
 ## Workflow
 
-1. GET /api/choices to see every command you can run, copied verbatim into POST /api/act.
-2. GET /api/screenshot to see numbered elements on the page.
+1. POST /api/act with { "action": "navigate", "url": "..." } to open a page (does not scan).
+2. GET /api/state to scan: highlighted screenshot + interactable elements + choices.
 3. POST /api/act with one of the choice commands.
-4. Repeat from step 1. /api/act returns refreshed choices after each successful command.
+4. GET /api/state again whenever you need an updated screenshot and element list.
 
-## 1. Choices
+The page is never auto-scanned. Only GET /api/state rescans.
 
-GET ${baseUrl}/api/choices
+## 1. State
 
-Lists every valid command for the current page as JSON objects you can POST to /api/act unchanged (except edit values like url, value, or checked).
+GET ${baseUrl}/api/state
+
+Rescans the live page. Returns JSON with:
+- url, title
+- screenshot — data:image/jpeg;base64,... with numbered outlines (#1, #2, …)
+- elements / buttons — interactables with number, description, and available actions
+- choices — commands you can POST to /api/act unchanged (except edit values like url, value, or checked)
+- cached — always false for this endpoint
 
 Example response:
 {
   "url": "https://example.com",
   "title": "Example Domain",
-  "cached": true,
+  "screenshot": "data:image/jpeg;base64,...",
+  "elements": [
+    {
+      "number": 1,
+      "description": "Link: More information... · https://www.iana.org/domains/example",
+      "actions": [
+        { "type": "click", "description": "Click the element" },
+        { "type": "scroll", "description": "Scroll the element into view" }
+      ]
+    }
+  ],
+  "buttons": [],
+  "popup": null,
   "choices": [
     { "action": "scroll-up" },
     { "action": "scroll-down" },
     { "action": "navigate", "url": "https://example.com" },
     { "element": 1, "action": "click" },
     { "element": 1, "action": "scroll-into-view" }
-  ]
+  ],
+  "cached": false
 }
+
+Without an active session this returns HTTP 503.
+
+Example:
+curl ${baseUrl}/api/state
+
+## 2. Choices (cached)
+
+GET ${baseUrl}/api/choices
+
+Returns the last scanned choices without rescanning. Call GET /api/state first.
 
 With no active session, choices only includes navigate:
 { "action": "navigate", "url": "https://example.com" }
 
-Add ?refresh=1 to force a new scan before listing choices.
-
 Example:
 curl ${baseUrl}/api/choices
 
-## 2. Screenshot
+## 3. Screenshot (cached)
 
 GET ${baseUrl}/api/screenshot
 
-Returns a JPEG with visible tabbable elements outlined and numbered (#1, #2, …). Match element numbers to commands in /api/choices.
-
-By default returns the cached screenshot. Add ?refresh=1 to force a new capture.
+Returns the last scanned JPEG. Call GET /api/state first to capture a new one.
 
 Example:
 curl -o screenshot.jpg ${baseUrl}/api/screenshot
 
-## 3. Act
+## 4. Act
 
 POST ${baseUrl}/api/act
 Content-Type: application/json
 
-Execute one command from /api/choices. On success, the page is rescanned and the response includes updated choices.
+Execute one command from /api/state. Does not rescan — call GET /api/state afterward for an updated screenshot and choices.
 
 Page commands:
 { "action": "scroll-up" }
@@ -82,8 +109,8 @@ curl -X POST ${baseUrl}/api/act -H "Content-Type: application/json" -d '{"action
 
 ## Tips
 
-- Start with { "action": "navigate", "url": "..." } — no web UI required.
-- Only POST commands that appear in /api/choices.
-- /api/act refreshes choices after success; use GET /api/screenshot to see the updated page image.
+- Start with navigate, then always GET /api/state before acting on elements.
+- Only POST commands that appear in the latest /api/state response.
+- /api/act and /api/choices do not refresh the page scan.
 - The server binds to localhost only; do not expose it to the network.`;
 }

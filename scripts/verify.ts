@@ -99,7 +99,7 @@ async function runTests(): Promise<void> {
     const instructionsRes = await fetch(`${BASE}/instructions`);
     if (!instructionsRes.ok) throw new Error(`GET /instructions failed: ${instructionsRes.status}`);
     const instructionsJson = (await instructionsRes.json()) as { systemPrompt?: string };
-    if (!instructionsJson.systemPrompt?.includes("/api/choices")) {
+    if (!instructionsJson.systemPrompt?.includes("/api/state")) {
       throw new Error("GET /instructions missing API documentation");
     }
     console.log("✓ GET /instructions returned system prompt");
@@ -112,6 +112,13 @@ async function runTests(): Promise<void> {
     }
     console.log("✓ GET /api/choices without session lists navigate");
 
+    const noSessionStateRes = await fetch(`${BASE}/api/state`);
+    if (noSessionStateRes.status !== 503) {
+      throw new Error(`GET /api/state without session expected 503, got ${noSessionStateRes.status}`);
+    }
+    console.log("✓ GET /api/state without session returns 503");
+
+    const emptyNavPromise = nextMessage(ws, "elements", 15000);
     const navigateRes = await fetch(`${BASE}/api/act`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -126,19 +133,51 @@ async function runTests(): Promise<void> {
     if (!navigateJson.success || !navigateJson.url.includes("example.com")) {
       throw new Error("POST /api/act navigate did not open example.com");
     }
-    if (navigateJson.choices.length === 0) throw new Error("POST /api/act navigate returned no choices");
     console.log(`✓ POST /api/act navigate opened example.com — ${navigateJson.choices.length} choice(s)`);
 
-    const elementsMsg = await nextMessage(ws, "elements", 15000);
-    if (elementsMsg.type !== "elements") throw new Error("Expected elements message after navigate");
+    // Navigate no longer scans; drain the empty elements broadcast.
+    const emptyAfterNav = await emptyNavPromise;
+    if (emptyAfterNav.type !== "elements") throw new Error("Expected elements message after navigate");
+    if (emptyAfterNav.elements.length !== 0) {
+      throw new Error("Navigate should not auto-scan elements");
+    }
+    console.log("✓ Navigate did not auto-scan elements");
 
+    const stateElementsPromise = nextMessage(ws, "elements", 15000);
+    const stateRes = await fetch(`${BASE}/api/state`);
+    if (!stateRes.ok) throw new Error(`GET /api/state failed: ${stateRes.status}`);
+    const stateJson = (await stateRes.json()) as {
+      url: string;
+      title: string;
+      screenshot?: string;
+      elements: Array<{ number?: number; description: string; actions: unknown[] }>;
+      buttons: unknown[];
+      choices: Array<{ action: string; element?: number }>;
+      cached: boolean;
+    };
+    if (!stateJson.url.includes("example.com")) throw new Error("API state missing page url");
+    if (!stateJson.screenshot?.startsWith("data:image/jpeg")) {
+      throw new Error("API state missing screenshot data URL");
+    }
+    if (stateJson.elements.length === 0) throw new Error("API state returned no elements");
+    if (!stateJson.elements.some((el) => el.number != null && el.description && el.actions.length > 0)) {
+      throw new Error("API state elements missing number/description/actions");
+    }
+    if (stateJson.cached !== false) throw new Error("API state should always rescan (cached=false)");
+    if (stateJson.choices.length === 0) throw new Error("API state returned no choices");
+    console.log(
+      `✓ GET /api/state returned ${stateJson.elements.length} element(s), ${stateJson.choices.length} choice(s)`,
+    );
+
+    const elementsMsg = await stateElementsPromise;
+    if (elementsMsg.type !== "elements") throw new Error("Expected elements broadcast from /api/state");
     const links = elementsMsg.elements.filter((e) => e.role === "link");
     if (links.length === 0) throw new Error("Expected at least one visible link on example.com");
     if (!elementsMsg.screenshot?.startsWith("data:image/jpeg")) {
       throw new Error("Expected highlighted screenshot in elements message");
     }
     console.log(
-      `✓ WebSocket received scan — ${elementsMsg.elements.length} visible element(s), ${links.length} link(s)`,
+      `✓ WebSocket received scan from /api/state — ${elementsMsg.elements.length} visible element(s), ${links.length} link(s)`,
     );
 
     const choicesRes = await fetch(`${BASE}/api/choices`);
@@ -184,8 +223,7 @@ async function runTests(): Promise<void> {
     if (!apiClickJson.success) {
       throw new Error(`POST /api/act click failed: ${apiClickJson.error ?? "unknown"}`);
     }
-    if (apiClickJson.choices.length === 0) throw new Error("POST /api/act did not return refreshed choices");
-    console.log("✓ POST /api/act click succeeded with refreshed choices");
+    console.log("✓ POST /api/act click succeeded without auto-rescan");
 
     send(ws, { type: "click", ref: links[0]!.ref });
     const clickResult = await nextMessage(ws, "action_result", 15000);
@@ -194,16 +232,23 @@ async function runTests(): Promise<void> {
     }
     console.log("✓ Click relayed successfully");
 
-    const afterClick = await nextMessage(ws, "elements", 15000);
-    if (afterClick.type !== "elements") throw new Error("Expected elements after click");
-    console.log(`✓ Element list refreshed after click — ${afterClick.elements.length} element(s)`);
+    const afterRefreshPromise = nextMessage(ws, "elements", 15000);
+    send(ws, { type: "refresh" });
+    const afterRefresh = await afterRefreshPromise;
+    if (afterRefresh.type !== "elements") throw new Error("Expected elements after refresh");
+    console.log(`✓ WS refresh rescanned — ${afterRefresh.elements.length} element(s)`);
 
+    const emptyFormPromise = nextMessage(ws, "elements", 45000);
     send(ws, { type: "navigate", url: "https://httpbin.org/forms/post" });
-    const formMsg = await nextMessage(ws, "elements", 45000);
-    if (formMsg.type !== "elements") throw new Error("Expected form elements");
+    const emptyForm = await emptyFormPromise;
+    if (emptyForm.type !== "elements") throw new Error("Expected elements after form navigate");
+    const formMsgPromise = nextMessage(ws, "elements", 45000);
+    send(ws, { type: "refresh" });
+    const formMsg = await formMsgPromise;
+    if (formMsg.type !== "elements") throw new Error("Expected form elements after refresh");
     const textboxes = formMsg.elements.filter((e) => e.role === "textbox");
     if (textboxes.length === 0) throw new Error("Expected textboxes on httpbin form");
-    console.log(`✓ Scanned httpbin form — ${textboxes.length} textbox(es)`);
+    console.log(`✓ Scanned httpbin form via refresh — ${textboxes.length} textbox(es)`);
 
     const custname = textboxes.find((e) => e.label.toLowerCase().includes("custname")) ?? textboxes[0]!;
     send(ws, { type: "fill", ref: custname.ref, value: "Test User" });

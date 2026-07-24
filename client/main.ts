@@ -10,6 +10,7 @@ const urlInput = document.getElementById("url-input") as HTMLInputElement;
 const navForm = document.getElementById("nav-form") as HTMLFormElement;
 const connectBtn = document.getElementById("connect-btn") as HTMLButtonElement;
 const refreshBtn = document.getElementById("refresh-btn") as HTMLButtonElement;
+const getStateBtn = document.getElementById("get-state-btn") as HTMLButtonElement;
 const scrollUpBtn = document.getElementById("scroll-up-btn") as HTMLButtonElement;
 const scrollDownBtn = document.getElementById("scroll-down-btn") as HTMLButtonElement;
 const disconnectBtn = document.getElementById("disconnect-btn") as HTMLButtonElement;
@@ -44,6 +45,7 @@ function setStatus(text: string, kind: "info" | "error" | "success" = "info"): v
 function updateControls(): void {
   const connected = session.connected;
   refreshBtn.disabled = !connected;
+  getStateBtn.disabled = !connected;
   scrollUpBtn.disabled = !connected;
   scrollDownBtn.disabled = !connected;
   disconnectBtn.disabled = !connected;
@@ -460,6 +462,43 @@ refreshBtn.addEventListener("click", () => {
   send({ type: "refresh" });
   setStatus("Refreshing visible elements and buttons…");
 });
+
+getStateBtn.addEventListener("click", () => {
+  void fetchState();
+});
+
+async function fetchState(): Promise<void> {
+  if (!session.connected || getStateBtn.disabled) return;
+
+  getStateBtn.disabled = true;
+  setStatus("Fetching /api/state…");
+
+  try {
+    const res = await fetch("/api/state");
+    const data = (await res.json()) as {
+      error?: string;
+      url?: string;
+      elements?: unknown[];
+      choices?: unknown[];
+    };
+
+    if (!res.ok) {
+      setStatus(data.error ?? `GET /api/state failed (${res.status})`, "error");
+      return;
+    }
+
+    const elementCount = data.elements?.length ?? 0;
+    const choiceCount = data.choices?.length ?? 0;
+    setStatus(
+      `State loaded — ${elementCount} element(s), ${choiceCount} choice(s)${data.url ? ` · ${data.url}` : ""}`,
+      "success",
+    );
+  } catch (err) {
+    setStatus(err instanceof Error ? err.message : String(err), "error");
+  } finally {
+    getStateBtn.disabled = !session.connected;
+  }
+}
 
 scrollUpBtn.addEventListener("click", () => {
   send({ type: "scroll_page", direction: "up" });

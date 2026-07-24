@@ -22,6 +22,7 @@ import { BrowserSession } from "./browser/session.js";
 import {
   choicesResponse,
   isActCommand,
+  stateResponse,
   type ActCommand,
   type ChoicesResponse,
 } from "./api/commands.js";
@@ -40,14 +41,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PORT = 3000;
 const HOST = "127.0.0.1";
 const IS_DEV = process.env.DEV === "1";
-const SYNC_INTERVAL_MS = 3000;
 
 const session = new BrowserSession();
 const clients = new Set<WebSocket>();
 
-let rescanTimer: ReturnType<typeof setTimeout> | null = null;
-let syncInterval: ReturnType<typeof setInterval> | null = null;
-let syncInProgress = false;
 let httpServer: http.Server | null = null;
 let wss: WebSocketServer | null = null;
 let vite: ViteDevServer | null = null;
@@ -76,18 +73,6 @@ function clearSnapshot(): void {
   lastElements = [];
   lastButtons = [];
   lastSnapshot = null;
-}
-
-function wantsRefresh(req: express.Request): boolean {
-  const value = req.query.refresh;
-  return value === "1" || value === "true";
-}
-
-function cancelPendingRescan(): void {
-  if (rescanTimer) {
-    clearTimeout(rescanTimer);
-    rescanTimer = null;
-  }
 }
 
 async function fetchCurrentPageInfo() {
@@ -271,14 +256,11 @@ async function runAct(body: unknown): Promise<ActResponse> {
     };
   }
 
-  if (body.action !== "navigate") {
-    await pushElements();
-  }
-
   return {
     success: true,
     ref: result.ref,
-    ...choicesResponse(lastSnapshot, false),
+    // Choices stay cached until GET /api/state rescans.
+    ...choicesResponse(lastSnapshot, lastSnapshot !== null),
   };
 }
 
@@ -290,9 +272,10 @@ function registerApiRoutes(app: express.Express): void {
     res.json({ systemPrompt: buildInstructionsPrompt(baseUrl) });
   });
 
-  app.get("/api/screenshot", async (req, res) => {
+  app.get("/api/screenshot", async (_req, res) => {
     try {
-      const result = await getPageSnapshot(wantsRefresh(req));
+      // Cached only — call GET /api/state to rescan.
+      const result = await getPageSnapshot(false);
       if (!result) {
         res.status(503).json({ error: "No active browser session" });
         return;
@@ -314,14 +297,36 @@ function registerApiRoutes(app: express.Express): void {
     }
   });
 
-  app.get("/api/choices", async (req, res) => {
+  app.get("/api/state", async (_req, res) => {
+    try {
+      if (!session.getPage()) {
+        res.status(503).json({ error: "No active browser session" });
+        return;
+      }
+
+      // Only HTTP path that rescans the page.
+      await pushElements();
+      if (!lastSnapshot) {
+        res.status(503).json({ error: "No active browser session" });
+        return;
+      }
+
+      res.setHeader("Cache-Control", "no-store");
+      res.json(stateResponse(lastSnapshot, false));
+    } catch (err) {
+      res.status(500).json({ error: formatUserError(err) });
+    }
+  });
+
+  app.get("/api/choices", async (_req, res) => {
     try {
       if (!session.getPage()) {
         res.json(choicesResponse(null));
         return;
       }
 
-      const result = await getPageSnapshot(wantsRefresh(req));
+      // Cached only — call GET /api/state to rescan.
+      const result = await getPageSnapshot(false);
       if (!result) {
         res.json(choicesResponse(null));
         return;
@@ -383,15 +388,6 @@ async function pushElements(): Promise<void> {
   }
 }
 
-function scheduleRescan(): void {
-  if (shuttingDown) return;
-  cancelPendingRescan();
-  rescanTimer = setTimeout(() => {
-    rescanTimer = null;
-    void pushElements();
-  }, 300);
-}
-
 function broadcast(message: ServerMessage): void {
   const payload = JSON.stringify(message);
   for (const client of clients) {
@@ -416,31 +412,7 @@ function send(ws: WebSocket, message: ServerMessage): void {
   }
 }
 
-function stopPeriodicSync(): void {
-  if (syncInterval) {
-    clearInterval(syncInterval);
-    syncInterval = null;
-  }
-}
-
-function startPeriodicSync(): void {
-  stopPeriodicSync();
-  syncInterval = setInterval(() => {
-    void syncOnce();
-  }, SYNC_INTERVAL_MS);
-}
-
-async function syncOnce(): Promise<void> {
-  if (shuttingDown || syncInProgress || !session.active) return;
-  syncInProgress = true;
-  try {
-    await pushElements();
-  } finally {
-    syncInProgress = false;
-  }
-}
-
-async function navigateToUrl(url: string): Promise<PageSnapshot> {
+async function navigateToUrl(url: string): Promise<void> {
   if (shuttingDown) {
     throw new Error("Server is shutting down");
   }
@@ -453,31 +425,33 @@ async function navigateToUrl(url: string): Promise<PageSnapshot> {
     target = `https://${target}`;
   }
 
-  cancelPendingRescan();
-  stopPeriodicSync();
-  await session.navigate(target, scheduleRescan);
+  await session.navigate(target);
   const page = session.getPage();
   if (!page) throw new Error("Failed to open page");
 
-  const info = await fetchCurrentPageInfo();
-  if (!info || !lastSnapshot) throw new Error("Failed to scan page");
+  // Do not scan here — GET /api/state (or WS refresh) owns rescans.
+  const pageUrl = page.url();
+  const pageTitle = await page.title();
+  updateSnapshot({
+    url: pageUrl,
+    title: pageTitle,
+    elements: [],
+    buttons: [],
+    popup: null,
+  });
 
   broadcast({
     type: "session",
-    session: { connected: true, url: info.url, title: info.title },
+    session: { connected: true, url: pageUrl, title: pageTitle },
   });
   broadcast({
     type: "elements",
-    elements: info.elements,
-    buttons: info.buttons,
-    url: info.url,
-    title: info.title,
-    popup: info.popup,
-    screenshot: info.screenshot,
+    elements: [],
+    buttons: [],
+    url: pageUrl,
+    title: pageTitle,
+    popup: null,
   });
-  startPeriodicSync();
-
-  return lastSnapshot;
 }
 
 async function handleNavigate(ws: WebSocket, url: string): Promise<void> {
@@ -511,10 +485,6 @@ async function handleAction(
   if (shuttingDown) return;
 
   send(ws, { type: "action_result", ...result });
-
-  if (result.success) {
-    await pushElements();
-  }
 }
 
 async function handleClientMessage(ws: WebSocket, raw: string): Promise<void> {
@@ -534,7 +504,6 @@ async function handleClientMessage(ws: WebSocket, raw: string): Promise<void> {
       break;
 
     case "disconnect":
-      stopPeriodicSync();
       await session.close();
       clearSnapshot();
       broadcast({
@@ -661,12 +630,6 @@ async function shutdown(signal?: string): Promise<void> {
   const forceExit = setTimeout(() => process.exit(0), maxWait);
 
   try {
-    if (rescanTimer) {
-      clearTimeout(rescanTimer);
-      rescanTimer = null;
-    }
-    stopPeriodicSync();
-
     closeWebSockets();
 
     await Promise.race([
